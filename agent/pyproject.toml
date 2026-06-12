@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "binacci-agent"
+name = "binacci-trading-agent"
 version = "0.1.0"
 description = "Binacci autonomous trading agent — BNB x CMC Hackathon (Track 1 + Track 2)"
 readme = "README.md"
@@ -17,10 +17,11 @@ dependencies = [
     "pydantic-settings>=2.1",
     "httpx>=0.25",
     "pyyaml>=6.0",
+    "fastapi>=0.104",
+    "uvicorn>=0.24",
 ]
 
 [project.optional-dependencies]
-server = ["fastapi>=0.104", "uvicorn>=0.24"]
 chain = ["bnbagent[server,ipfs]", "web3>=6.0"]
 dev = ["pytest>=7.4", "pytest-asyncio>=0.21"]
 
