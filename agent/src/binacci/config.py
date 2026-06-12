@@ -193,7 +193,22 @@ class StrategyConfig(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="BINACCI_", env_nested_delimiter="__")
 
-    symbols: list[str] = Field(default_factory=lambda: ["BNB", "BTC", "ETH", "CAKE", "SOL"])
+    #: Candidate universe — tokens with real PancakeSwap/BSC liquidity
+    #: (majors via Binance-pegged tokens + BSC-native ecosystem). The live
+    #: loop VERIFIES each candidate through a TWAK quote at startup and
+    #: auto-drops anything illiquid or unresolvable, so this list is an
+    #: upper bound, not a promise. Override: BINACCI_SYMBOLS.
+    symbols: list[str] = Field(default_factory=lambda: [
+        # majors / Binance-pegged
+        "BNB", "BTC", "ETH", "XRP", "ADA", "DOGE", "DOT", "LINK", "LTC",
+        "AVAX", "TRX", "ATOM", "FIL", "UNI", "AAVE", "NEAR", "BCH", "ETC",
+        "EOS", "XLM", "MATIC", "SHIB", "PEPE", "TON", "INJ", "FET",
+        "SUSHI", "COMP", "SNX", "1INCH", "YFI", "CRV", "MKR", "LDO",
+        # BSC-native / ecosystem
+        "CAKE", "TWT", "XVS", "FLOKI", "BSW", "SFP", "GMT", "ID", "EDU",
+        "HOOK", "MBOX", "ALICE", "AXS", "C98", "BAKE", "DODO", "ALPHA",
+        "TLM", "CHESS", "LINA", "HIGH", "DAR", "BEL", "DEGO", "WING", "LIT",
+    ])
     quote: str = "USDT"
     entry_timeframes: list[Timeframe] = Field(
         default_factory=lambda: list(Timeframe)
@@ -245,6 +260,14 @@ class RuntimeConfig(BaseSettings):
 
     venue: str = "paper"  # paper | pancake | perps
     deposit_usd: float = 1000.0
+    #: Live loop poll interval (seconds). One batched CMC quotes call per
+    #: poll regardless of symbol count (1 credit covers up to 100 symbols).
+    poll_seconds: int = 30
+    #: Liquidity verification: "auto" (verify when twak is installed),
+    #: "true", or "false". Unverified symbols never reach the live venue.
+    verify_liquidity: str = "auto"
+    #: Drop candidates whose $1 test-quote price impact exceeds this (%).
+    max_price_impact_pct: float = 1.0
 
     # Trust Wallet Agent Kit / chain
     twak_endpoint: str = ""

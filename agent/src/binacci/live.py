@@ -124,6 +124,9 @@ class LiveLoop:
         # venue execution: engine decides, venue mirrors on-chain
         self.venue: Venue = make_venue(rcfg)
         self.venue_log: list[dict] = []
+        #: Liquidity-verified symbols (None until verification completes).
+        #: Unverified symbols are analyzed but never executed on-chain.
+        self.verified: Optional[dict[str, dict]] = None
         if rcfg.venue != "paper":
             self.orch.on_open = self._venue_open
             self.orch.on_close = self._venue_close
@@ -131,6 +134,13 @@ class LiveLoop:
     # ---------------- venue hooks ----------------
 
     def _venue_open(self, pos) -> None:
+        if self.verified is not None and pos.symbol not in self.verified:
+            self.venue_log.append({
+                "ts": datetime.now(timezone.utc).isoformat(), "action": "open",
+                "symbol": pos.symbol, "ok": False,
+                "detail": "blocked: symbol not liquidity-verified",
+            })
+            return
         res = self.venue.place_limit(pos.symbol, pos.side, pos.avg_entry, pos.notional_usd)
         self.venue_log.append({
             "ts": datetime.now(timezone.utc).isoformat(), "action": "open",
@@ -184,6 +194,11 @@ class LiveLoop:
             "warmup": self.warmup_info(),
             "venue": self.rcfg.venue,
             "venue_log_tail": self.venue_log[-5:],
+            "universe": {
+                "candidates": len(self.scfg.symbols),
+                "verified": sorted(self.verified) if self.verified is not None else None,
+                "verified_count": len(self.verified) if self.verified is not None else None,
+            },
         }
 
     # ---------------- persistence ----------------
@@ -211,6 +226,60 @@ class LiveLoop:
             except Exception:  # pragma: no cover
                 log.exception("restore failed for %s", s)
 
+    # ---------------- universe verification ----------------
+
+    def _should_verify(self) -> bool:
+        mode = self.rcfg.verify_liquidity.lower()
+        if mode == "false":
+            return False
+        from .venues import TwakCLI
+
+        if mode == "true":
+            return True
+        return TwakCLI().installed  # auto
+
+    def _verify_universe(self) -> None:
+        """Self-source the tradable universe: $1 test-quote every candidate
+        through TWAK on BSC; keep symbols that resolve with price impact
+        under the configured ceiling. Cached to disk for 24h."""
+        from .venues import TwakCLI
+
+        cache = self.data_dir / "universe.json"
+        try:
+            if cache.exists():
+                data = json.loads(cache.read_text())
+                age = datetime.now(timezone.utc) - datetime.fromisoformat(data["ts"])
+                if age < timedelta(hours=24):
+                    self.verified = data["verified"]
+                    log.info("universe from cache: %d verified", len(self.verified))
+                    return
+        except Exception:
+            log.exception("universe cache read failed")
+
+        twak = TwakCLI(timeout_s=45)
+        verified: dict[str, dict] = {}
+        for sym in self.scfg.symbols:
+            res = twak.quote_swap("USDT", sym, usd=1.0, chain="bsc")
+            if res.get("error"):
+                log.info("universe drop %s: %s", sym, str(res.get("error"))[:120])
+                continue
+            try:
+                impact = abs(float(res.get("priceImpact") or 0.0))
+            except (TypeError, ValueError):
+                impact = 0.0
+            if impact > self.rcfg.max_price_impact_pct:
+                log.info("universe drop %s: price impact %.2f%%", sym, impact)
+                continue
+            verified[sym] = {"priceImpact": impact, "provider": res.get("provider", "")}
+        self.verified = verified
+        log.info("universe verified: %d/%d tradable", len(verified), len(self.scfg.symbols))
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(
+                {"ts": datetime.now(timezone.utc).isoformat(), "verified": verified}))
+        except Exception:
+            log.exception("universe cache write failed")
+
     # ---------------- core loop ----------------
 
     async def run(self) -> None:
@@ -220,9 +289,11 @@ class LiveLoop:
         self.cmc = CMCClient(self.rcfg)
         self._restore()
         self.started_at = datetime.now(timezone.utc)
-        log.info("live loop started: %s on %s", self.scfg.symbols,
+        log.info("live loop started: %d candidates on %s", len(self.scfg.symbols),
                  [tf.value for tf in self.live_tfs])
-        poll_s = 20
+        if self._should_verify():
+            asyncio.get_event_loop().run_in_executor(None, self._verify_universe)
+        poll_s = max(int(self.rcfg.poll_seconds), 10)
         checkpoint_every = 30  # polls
         while True:
             try:
