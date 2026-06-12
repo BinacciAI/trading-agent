@@ -11,3 +11,4 @@ build/
 spec.json
 *.log
 .DS_Store
+pytest-cache-files-*/
