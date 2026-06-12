@@ -109,14 +109,26 @@ class CMCClient:
     def quotes(self, symbols: Iterable[str], convert: str = "USD") -> dict[str, float]:
         r = self._client.get(
             "/v2/cryptocurrency/quotes/latest",
-            params={"symbol": ",".join(symbols), "convert": convert},
+            params={"symbol": ",".join(symbols), "convert": convert,
+                    "skip_invalid": "true"},
         )
         r.raise_for_status()
         data = r.json()["data"]
         out: dict[str, float] = {}
         for sym, entries in data.items():
-            e = entries[0] if isinstance(entries, list) else entries
-            out[sym] = float(e["quote"][convert]["price"])
+            if isinstance(entries, list):
+                if not entries:
+                    continue
+                # ambiguous tickers return multiple coins — take the one
+                # with the highest market cap (the canonical listing)
+                e = max(entries, key=lambda x: (x.get("quote", {}).get(convert, {})
+                                                .get("market_cap") or 0))
+            else:
+                e = entries
+            try:
+                out[sym] = float(e["quote"][convert]["price"])
+            except (KeyError, TypeError):
+                continue
         return out
 
     def global_metrics(self) -> dict:
