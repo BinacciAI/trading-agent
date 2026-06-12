@@ -139,6 +139,29 @@ def build_app():
 
         return skill_manifest()
 
+    @app.get("/signals")
+    def signals():
+        """Pending limit entries — levels parked by SimB awaiting a touch."""
+        return [{
+            "symbol": p.signal.symbol, "tf": p.signal.timeframe.value,
+            "side": p.signal.side.value, "level_price": p.signal.level_price,
+            "target_pct": p.signal.target_pct,
+            "level_kind": p.signal.meta.get("level_kind", ""),
+            "created": p.created.isoformat(), "expires": p.expires.isoformat(),
+        } for p in ctx.orchestrator.pending]
+
+    @app.get("/references")
+    def references():
+        """Market Memory — current reference points per symbol/timeframe."""
+        out = []
+        for (sym, tf), ref in sorted(ctx.orchestrator.book.refs.items()):
+            out.append({
+                "symbol": sym, "tf": tf.value, "kind": ref.kind.value,
+                "price": ref.price, "ts": ref.ts.isoformat(), "clean": ref.clean,
+                "rsi": ref.meta.get("rsi"), "volume_ratio": ref.meta.get("volume_ratio"),
+            })
+        return out
+
     @app.get("/venue")
     def venue():
         return {
