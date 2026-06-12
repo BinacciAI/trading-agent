@@ -1,0 +1,19 @@
+[
+  "tests/test_execution.py::test_averaging_ladder",
+  "tests/test_execution.py::test_averaging_requires_drawdown",
+  "tests/test_execution.py::test_entry_sizing",
+  "tests/test_execution.py::test_kill_switch",
+  "tests/test_execution.py::test_margin_model_numbers",
+  "tests/test_execution.py::test_max_positions_and_smart_slot_return",
+  "tests/test_execution.py::test_take_profit",
+  "tests/test_execution.py::test_trailing_ladder",
+  "tests/test_execution.py::test_trailing_stop_close",
+  "tests/test_strategy.py::test_backtest_runs",
+  "tests/test_strategy.py::test_divergence_detector",
+  "tests/test_strategy.py::test_indicators_shapes",
+  "tests/test_strategy.py::test_levels",
+  "tests/test_strategy.py::test_macro_gate",
+  "tests/test_strategy.py::test_reference_book",
+  "tests/test_strategy.py::test_sim_a_b",
+  "tests/test_strategy.py::test_skill_spec"
+]

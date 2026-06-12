@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "binacci-agent"
+version = "0.1.0"
+description = "Binacci autonomous trading agent — BNB x CMC Hackathon (Track 1 + Track 2)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "Brandon", email = "brandononchain@gmail.com" }]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "httpx>=0.25",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+server = ["fastapi>=0.104", "uvicorn>=0.24"]
+chain = ["bnbagent[server,ipfs]", "web3>=6.0"]
+dev = ["pytest>=7.4", "pytest-asyncio>=0.21"]
+
+[project.scripts]
+binacci = "binacci.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/binacci"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
