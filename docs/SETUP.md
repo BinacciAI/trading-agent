@@ -56,17 +56,29 @@ cd ../dashboard
 npm install && npm run dev               # http://localhost:3000
 ```
 
-## 6. Environment reference (`agent/.env`)
+## 6. Environment reference (Railway service variables / `agent/.env`)
 
 ```
+# L1 — CoinMarketCap (data + macro gate + live loop)
 BINACCI_CMC_API_KEY=...
-BINACCI_VENUE=paper            # paper -> pancake -> perps as integration matures
+
+# Engine
+BINACCI_VENUE=paper            # paper -> pancake (mainnet swaps) when ready
 BINACCI_DEPOSIT_USD=1000
-BINACCI_TWAK_ENDPOINT=http://localhost:8080
-BINACCI_WALLET_ADDRESS=0x...
-BINACCI_USE_TESTNET=true
-WALLET_PASSWORD=...       # bnbagent keystore
-PRIVATE_KEY=0x...         # first run only; encrypted afterward
+BINACCI_USE_TESTNET=true       # NOTE: swaps unsupported on bsctestnet
+BINACCI_WALLET_ADDRESS=0x...   # agent wallet (DoraHacks PnL replay address)
+BINACCI_DATA_DIR=/data         # mount a Railway volume here for warm restarts
+
+# L2 — Trust Wallet Agent Kit (entrypoint runs `twak init` + wallet create)
+TWAK_ACCESS_ID=...             # from portal.trustwallet.com
+TWAK_HMAC_SECRET=...
+TWAK_WALLET_PASSWORD=...       # encrypts the local non-custodial wallet
+
+# L3 — BNB AI Agent SDK (ERC-8004 identity + APEX paid jobs)
+BINACCI_AUTO_REGISTER=true     # one-time on-chain registration at startup
+WALLET_PASSWORD=...            # bnbagent keystore password
+PRIVATE_KEY=0x...              # first run only; encrypted afterward
+BINACCI_AGENT_CARD_URL=        # optional A2A agent card URL
 ```
 
 ## Risk notes (read before mainnet)

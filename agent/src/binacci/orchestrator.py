@@ -82,6 +82,11 @@ class Orchestrator:
         self.pending: list[PendingEntry] = []
         self.traces: list[DecisionTrace] = []
         self.max_traces = 500
+        #: Venue execution hooks (set by the live loop). Called AFTER the
+        #: deterministic engine has accepted the open/close — the venue
+        #: mirrors engine state on-chain; it never decides.
+        self.on_open = None   # fn(position) -> None
+        self.on_close = None  # fn(closed_trade) -> None
 
     # ---------------- background sims ----------------
 
@@ -178,8 +183,15 @@ class Orchestrator:
             if touched:
                 pos = self.engine.open_from_signal(sig, fill_price=sig.level_price, ts=ts)
                 self.pending.remove(p)
-                if pos is not None and self.traces:
-                    self.traces[-1].entered = True
+                if pos is not None:
+                    if self.traces:
+                        self.traces[-1].entered = True
+                    if self.on_open:
+                        try:
+                            self.on_open(pos)
+                        except Exception:  # venue failure never corrupts engine state
+                            import logging
+                            logging.getLogger(__name__).exception("on_open hook failed")
 
         # manage open positions on this symbol
         for pos in self.engine.open_positions():
@@ -206,6 +218,14 @@ class Orchestrator:
 
         # kill switch across the whole book
         closed += self.engine.check_kill_switch(prices, ts)
+
+        if self.on_close:
+            for trade in closed:
+                try:
+                    self.on_close(trade)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("on_close hook failed")
         return closed
 
     # ---------------- misc ----------------

@@ -29,6 +29,7 @@ from .indicators import to_dataframe
 from .macro import MacroSnapshot
 from .models import Candle
 from .orchestrator import Orchestrator
+from .venues import Venue, make_venue
 
 log = logging.getLogger(__name__)
 
@@ -120,6 +121,38 @@ class LiveLoop:
         self.data_dir = Path(os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data"))
         # the orchestrator's macro provider reads our cache
         self.orch.macro_provider = lambda: self.macro
+        # venue execution: engine decides, venue mirrors on-chain
+        self.venue: Venue = make_venue(rcfg)
+        self.venue_log: list[dict] = []
+        if rcfg.venue != "paper":
+            self.orch.on_open = self._venue_open
+            self.orch.on_close = self._venue_close
+
+    # ---------------- venue hooks ----------------
+
+    def _venue_open(self, pos) -> None:
+        res = self.venue.place_limit(pos.symbol, pos.side, pos.avg_entry, pos.notional_usd)
+        self.venue_log.append({
+            "ts": datetime.now(timezone.utc).isoformat(), "action": "open",
+            "symbol": pos.symbol, "notional_usd": round(pos.notional_usd, 2),
+            "ok": res.ok, "tx": res.tx_or_id, "detail": res.detail,
+        })
+        if res.ok and res.fill_price:
+            pos.meta["venue_fill_price"] = res.fill_price
+            pos.meta["venue_tx"] = res.tx_or_id
+        if not res.ok:
+            log.error("venue open failed for %s: %s", pos.symbol, res.detail)
+
+    def _venue_close(self, trade) -> None:
+        pos = trade.position
+        res = self.venue.market_close(pos.symbol, pos.side, abs(pos.fills[-1].notional_usd))
+        self.venue_log.append({
+            "ts": datetime.now(timezone.utc).isoformat(), "action": "close",
+            "symbol": pos.symbol, "reason": trade.reason,
+            "ok": res.ok, "tx": res.tx_or_id, "detail": res.detail,
+        })
+        if not res.ok:
+            log.error("venue close failed for %s: %s", pos.symbol, res.detail)
 
     # ---------------- status ----------------
 
@@ -149,6 +182,8 @@ class LiveLoop:
             "macro_fresh": bool(self.macro),
             "symbols": self.scfg.symbols,
             "warmup": self.warmup_info(),
+            "venue": self.rcfg.venue,
+            "venue_log_tail": self.venue_log[-5:],
         }
 
     # ---------------- persistence ----------------

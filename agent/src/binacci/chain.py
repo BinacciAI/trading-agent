@@ -76,6 +76,36 @@ def execute_strategy_job(job: dict) -> str:
     return json.dumps(spec, indent=2, default=str)
 
 
+def maybe_auto_register() -> Optional[dict]:
+    """Opt-in ERC-8004 registration at startup (BINACCI_AUTO_REGISTER=true).
+
+    Idempotent: stores the minted agentId in the data dir and skips when
+    already registered. Gas-free on bsc-testnet via MegaFuel paymaster.
+    """
+    import json
+    from pathlib import Path
+
+    if os.environ.get("BINACCI_AUTO_REGISTER", "").lower() not in ("1", "true", "yes"):
+        return None
+    marker = Path(os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data")) / "erc8004.json"
+    if marker.exists():
+        log.info("ERC-8004 already registered: %s", marker.read_text())
+        return json.loads(marker.read_text())
+    if not (os.environ.get("WALLET_PASSWORD") and
+            (os.environ.get("PRIVATE_KEY") or marker.parent.joinpath(".keystore").exists())):
+        log.warning("auto-register skipped: WALLET_PASSWORD/PRIVATE_KEY not set")
+        return None
+    network = "bsc-testnet" if os.environ.get("BINACCI_USE_TESTNET", "true").lower() in ("1", "true", "yes") else "bsc"
+    result = register_agent_identity(network=network,
+                                     a2a_card_url=os.environ.get("BINACCI_AGENT_CARD_URL", ""))
+    if result:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"agentId": result.get("agentId"),
+                                      "tx": result.get("transactionHash"),
+                                      "network": network}))
+    return result
+
+
 def create_agent_app():
     """FastAPI app: Binacci status API + APEX server mounted at /apex."""
     from .api import build_app
@@ -89,4 +119,10 @@ def create_agent_app():
         log.info("APEX server mounted at /apex")
     except ImportError:
         log.warning("bnbagent not installed — running without APEX endpoints")
+    except Exception:
+        log.exception("APEX mount failed — continuing without it")
+    try:
+        maybe_auto_register()
+    except Exception:
+        log.exception("ERC-8004 auto-register failed — continuing")
     return app

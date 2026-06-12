@@ -139,6 +139,39 @@ def build_app():
 
         return skill_manifest()
 
+    @app.get("/venue")
+    def venue():
+        return {
+            "venue": ctx.rcfg.venue,
+            "testnet": ctx.rcfg.use_testnet,
+            "wallet": ctx.rcfg.wallet_address,
+            "log": ctx.loop.venue_log[-50:],
+        }
+
+    @app.get("/x402")
+    def x402_info():
+        """x402 monetization descriptor (L1 optional layer).
+
+        Strategy specs are free during hackathon judging. Production
+        monetization is dual-rail: APEX (ERC-8183) escrowed jobs at /apex
+        for verifiable deliverables, and x402 pay-per-call (settled on BSC,
+        EIP-3009 USDT/USDC) for low-latency spec pulls. Agents can pay this
+        endpoint family via `twak x402 request`.
+        """
+        return {
+            "protocol": "x402",
+            "status": "free_during_hackathon",
+            "paid_rails": {
+                "apex": {"endpoint": "/apex", "standard": "ERC-8183",
+                         "escrow": "UMA OOv3 verified", "network": "bsc"},
+                "x402": {"planned_assets": ["USDT (bsc, 18dp)", "USDC (bsc, 6dp)"],
+                         "transfer_methods": ["eip3009", "permit2-exact"],
+                         "pay_to": ctx.rcfg.wallet_address or "set BINACCI_WALLET_ADDRESS"},
+            },
+            "resource": {"url": "/spec", "description": "Backtestable reaction-strategy spec",
+                         "mimeType": "application/json"},
+        }
+
     return app
 
 
