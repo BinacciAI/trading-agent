@@ -1,19 +1,24 @@
 """FastAPI status server — feeds the dashboard and external monitors.
 
 Endpoints:
-* GET /status      — account snapshot (equity, slots, drawdown, kill switch)
+* GET /status      — account snapshot + live-loop health
 * GET /positions   — open positions with live gain/SL state
 * GET /trades      — closed trade log
 * GET /traces      — recent decision traces (the 5-gate audit trail)
 * GET /spec        — generate a Track 2 strategy spec on demand
+* GET /manifest    — CMC Skills Marketplace manifest
 * GET /health      — liveness
 
-Run: `uvicorn binacci.api:app --port 8000`
-or with APEX mounted: `uvicorn binacci.chain:create_agent_app --factory`
+On startup, if BINACCI_CMC_API_KEY is set, the live loop starts: it polls
+CMC quotes, builds candles, refreshes the macro gate, runs the 5-gate
+evaluations, and executes on the configured venue (paper by default).
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from .config import RuntimeConfig, StrategyConfig, Timeframe
@@ -21,16 +26,24 @@ from .data import SyntheticSource
 from .execution import ExecutionEngine
 from .orchestrator import Orchestrator
 
+log = logging.getLogger(__name__)
+
 
 class AgentContext:
-    """Singleton-ish runtime context shared by API and the live loop."""
+    """Runtime context shared by the API and the live loop."""
 
     def __init__(self):
-        self.scfg = StrategyConfig()
+        self.scfg = StrategyConfig.load()
         self.rcfg = RuntimeConfig()
         self.engine = ExecutionEngine(self.scfg, deposit_usd=self.rcfg.deposit_usd)
         self.orchestrator = Orchestrator(self.scfg, self.engine)
-        self.prices: dict[str, float] = {}
+        from .live import LiveLoop
+
+        self.loop = LiveLoop(self.scfg, self.rcfg, self.engine, self.orchestrator)
+
+    @property
+    def prices(self) -> dict[str, float]:
+        return self.loop.prices
 
 
 _ctx: Optional[AgentContext] = None
@@ -47,19 +60,33 @@ def build_app():
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
 
-    app = FastAPI(title="Binacci Agent", version="0.1.0")
-    app.add_middleware(
-        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
-    )
     ctx = get_context()
+
+    @asynccontextmanager
+    async def lifespan(app):
+        task = asyncio.create_task(ctx.loop.run())
+        log.info("agent app started (live loop %s)",
+                 "enabled" if ctx.rcfg.cmc_api_key else "idle — no CMC key")
+        yield
+        task.cancel()
+
+    app = FastAPI(title="Binacci Agent", version="0.1.0", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"],
+    )
 
     @app.get("/health")
     def health():
-        return {"ok": True, "venue": ctx.rcfg.venue, "testnet": ctx.rcfg.use_testnet}
+        return {"ok": True, "venue": ctx.rcfg.venue, "testnet": ctx.rcfg.use_testnet,
+                "loop_running": ctx.loop.running}
 
     @app.get("/status")
     def status():
-        return ctx.engine.snapshot(ctx.prices)
+        snap = ctx.engine.snapshot(ctx.prices)
+        snap["loop"] = ctx.loop.status()
+        snap["venue"] = ctx.rcfg.venue
+        snap["prices"] = {k: round(v, 6) for k, v in ctx.prices.items()}
+        return snap
 
     @app.get("/positions")
     def positions():

@@ -19,35 +19,6 @@ type Trace = {
   gates: { step: string; passed: boolean; detail: string }[];
 };
 
-/* ── Demo data (shown until the live agent API is connected) ─ */
-const DEMO_STATUS: Status = {
-  deposit_usd: 1000, realized_pnl_usd: 14.62, unrealized_pnl_usd: 1.18,
-  equity_usd: 1015.8, open_positions: 2, slots_used: 2, slots_max: 5,
-  aggregate_drawdown_usd: 0.42, kill_switch_fired: false, closed_trades: 27,
-};
-const DEMO_POSITIONS: Pos[] = [
-  { symbol: "BNB", tf: "15m", side: "long", state: "sl_in_profit", avg_entry: 698.42, notional_usd: 3.5, gain_pct: 0.52, peak_gain_pct: 0.61, stop_pct: 0.4, target_pct: 0.5, averaging_done: 0 },
-  { symbol: "ETH", tf: "4h", side: "long", state: "open", avg_entry: 4012.7, notional_usd: 17.5, gain_pct: -0.31, peak_gain_pct: 0.08, stop_pct: null, target_pct: 2.0, averaging_done: 1 },
-];
-const DEMO_TRADES: Trade[] = [
-  { symbol: "BNB", tf: "15m", pnl_usd: 0.18, reason: "take_profit", closed: new Date(Date.now() - 32 * 60000).toISOString() },
-  { symbol: "CAKE", tf: "30m", pnl_usd: 0.07, reason: "take_profit", closed: new Date(Date.now() - 95 * 60000).toISOString() },
-  { symbol: "ETH", tf: "15m", pnl_usd: 0.01, reason: "trailing_stop", closed: new Date(Date.now() - 160 * 60000).toISOString() },
-  { symbol: "BTC", tf: "89m", pnl_usd: 0.52, reason: "take_profit", closed: new Date(Date.now() - 310 * 60000).toISOString() },
-];
-const mkGates = (upTo: number, fail = ""): Trace["gates"] => {
-  const steps = ["fresh_reference", "entry_zone", "filters_ok", "macro_ok", "level_touch"];
-  return steps.slice(0, upTo).map((s, i) => ({
-    step: s, passed: i < upTo - 1 || fail === "", detail: fail && i === upTo - 1 ? fail : "confirmed",
-  }));
-};
-const DEMO_TRACES: Trace[] = [
-  { symbol: "BTC", tf: "15m", ts: new Date(Date.now() - 4 * 60000).toISOString(), entered: false, gates: mkGates(3, "volume confirmation failed") },
-  { symbol: "BNB", tf: "15m", ts: new Date(Date.now() - 9 * 60000).toISOString(), entered: true, gates: mkGates(5) },
-  { symbol: "ETH", tf: "4h", ts: new Date(Date.now() - 14 * 60000).toISOString(), entered: false, gates: mkGates(2, "not in entry zone") },
-  { symbol: "SOL", tf: "30m", ts: new Date(Date.now() - 21 * 60000).toISOString(), entered: false, gates: mkGates(4, "USDT.D rising - macro blocked") },
-];
-
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 
 const NAV = [
@@ -64,10 +35,10 @@ const NAV = [
 ];
 
 export default function Page() {
-  const [status, setStatus] = useState<Status>(DEMO_STATUS);
-  const [positions, setPositions] = useState<Pos[]>(DEMO_POSITIONS);
-  const [trades, setTrades] = useState<Trade[]>(DEMO_TRADES);
-  const [traces, setTraces] = useState<Trace[]>(DEMO_TRACES);
+  const [status, setStatus] = useState<Status | null>(null);
+  const [positions, setPositions] = useState<Pos[]>([]);
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const [traces, setTraces] = useState<Trace[]>([]);
   const [live, setLive] = useState(false);
 
   useEffect(() => {
@@ -81,7 +52,7 @@ export default function Page() {
         ]);
         setStatus(s); setPositions(p); setTrades(t); setTraces(tr); setLive(true);
       } catch {
-        setLive(false); // stay on demo data
+        setLive(false);
       }
     };
     tick();
@@ -89,7 +60,7 @@ export default function Page() {
     return () => clearInterval(id);
   }, []);
 
-  const pnl = status.realized_pnl_usd + status.unrealized_pnl_usd;
+  const pnl = (status?.realized_pnl_usd ?? 0) + (status?.unrealized_pnl_usd ?? 0);
   const wins = trades.filter((t) => t.pnl_usd > 0).length;
   const winRate = trades.length ? (wins / trades.length) * 100 : 0;
   const exposure = positions.reduce((a, p) => a + p.notional_usd, 0);
@@ -100,11 +71,11 @@ export default function Page() {
         <img src="/binacci-logo.png" alt="Binacci" width={34} height={34}
              style={{ borderRadius: 8, border: "1px solid var(--border-gold)" }} />
         <div className="wordmark"><span className="b">BINACCI</span><span className="ai">AI</span></div>
-        <span className={live ? "badge green" : "badge cyan"}>{live ? "LIVE" : "PAPER · DEMO"}</span>
+        <span className={live ? "badge green" : "badge gray"}>{live ? "LIVE · PAPER" : "OFFLINE"}</span>
         <div className="spacer" />
-        <span className={status.kill_switch_fired ? "pill dead" : "pill"}>
+        <span className={status?.kill_switch_fired ? "pill dead" : "pill"}>
           <span className="dot" />
-          {status.kill_switch_fired ? "Kill Switch Fired" : "Agents Running"}
+          {status?.kill_switch_fired ? "Kill Switch Fired" : live ? "Agents Running" : "Connecting…"}
         </span>
       </header>
 
@@ -123,13 +94,13 @@ export default function Page() {
         <main className="main">
           {!live && (
             <p className="demo-note">
-              Demo data shown — connect the live agent API (<code>AGENT_API_URL</code>) to go live.
+              Connecting to the agent… data appears as soon as the live API responds.
             </p>
           )}
 
           <div className="cards">
             <div className="card"><div className="lbl">Portfolio Value</div>
-              <div className="val gold">${fmt(status.equity_usd)}</div></div>
+              <div className="val gold">${fmt(status?.equity_usd ?? 0)}</div></div>
             <div className="card"><div className="lbl">P/L</div>
               <div className={pnl >= 0 ? "val pos" : "val neg"}>{pnl >= 0 ? "+" : ""}{fmt(pnl)}</div></div>
             <div className="card"><div className="lbl">Active Agents</div>
@@ -139,7 +110,7 @@ export default function Page() {
             <div className="card"><div className="lbl">Win Rate</div>
               <div className="val pos">{fmt(winRate)}%</div></div>
             <div className="card"><div className="lbl">Open Positions</div>
-              <div className="val">{status.slots_used}/{status.slots_max}</div></div>
+              <div className="val">{status?.slots_used ?? 0}/{status?.slots_max ?? 5}</div></div>
           </div>
 
           <h2 className="section">Open Positions</h2>
@@ -148,7 +119,7 @@ export default function Page() {
               <thead><tr><th>Market</th><th>TF</th><th>Mode</th><th>Avg Entry</th><th>Size</th>
                 <th>Gain</th><th>Peak</th><th>Stop</th><th>Target</th><th>Avg</th></tr></thead>
               <tbody>
-                {positions.length === 0 && <tr><td colSpan={10}>no open positions — agents are waiting for confirmation</td></tr>}
+                {positions.length === 0 && <tr><td colSpan={10}>no open positions — agents are watching, waiting for full 5-gate confirmation</td></tr>}
                 {positions.map((p, i) => (
                   <tr key={i}>
                     <td style={{ color: "var(--text-primary)", fontWeight: 600 }}>{p.symbol}/USDT</td>
@@ -173,7 +144,7 @@ export default function Page() {
             <table>
               <thead><tr><th>Time</th><th>Market</th><th>TF</th><th>Decision Trail (5-Gate Audit)</th><th>Result</th></tr></thead>
               <tbody>
-                {traces.length === 0 && <tr><td colSpan={5}>no evaluations yet</td></tr>}
+                {traces.length === 0 && <tr><td colSpan={5}>no evaluations yet — markets warming up</td></tr>}
                 {[...traces].reverse().slice(0, 12).map((t, i) => (
                   <tr key={i}>
                     <td className="num">{new Date(t.ts).toLocaleTimeString()}</td>
@@ -238,13 +209,13 @@ export default function Page() {
           <div className="vault">
             <div className="title">🜲 Risk Vault</div>
             <div className="row"><span>Risk Mode</span><span className="v">Conservative</span></div>
-            <div className="row"><span>Position Slots</span><span className="v">{status.slots_used} / {status.slots_max}</span></div>
+            <div className="row"><span>Position Slots</span><span className="v">{status?.slots_used ?? 0} / {status?.slots_max ?? 5}</span></div>
             <div className="row"><span>Open Exposure</span><span className="v">${fmt(exposure)}</span></div>
-            <div className="row"><span>Aggregate Drawdown</span><span className="v">${fmt(status.aggregate_drawdown_usd)}</span></div>
+            <div className="row"><span>Aggregate Drawdown</span><span className="v">${fmt(status?.aggregate_drawdown_usd ?? 0)}</span></div>
             <div className="row"><span>Reserve Margin</span><span className="v">Held · Untouched</span></div>
             <div className="row"><span>Kill Switch</span>
-              <span className={status.kill_switch_fired ? "v danger" : "v"}>
-                {status.kill_switch_fired ? "FIRED" : "Armed"}</span></div>
+              <span className={status?.kill_switch_fired ? "v danger" : "v"}>
+                {status?.kill_switch_fired ? "FIRED" : "Armed"}</span></div>
           </div>
 
           <div className="vault" style={{ borderColor: "var(--border-cyan)" }}>
