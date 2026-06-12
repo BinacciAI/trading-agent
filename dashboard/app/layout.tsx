@@ -2,8 +2,13 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Binacci Agent",
-  description: "Reaction-based autonomous trading agent — live console",
+  title: "Binacci AI — Command Center",
+  description:
+    "Mythic intelligence meets autonomous trading infrastructure. Deterministic strategy, agentic execution, full audit trails.",
+  icons: {
+    icon: "/favicon.png",
+    apple: "/apple-icon.png",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
