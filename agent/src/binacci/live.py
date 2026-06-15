@@ -37,7 +37,9 @@ log = logging.getLogger(__name__)
 #: so more strategies can fire sooner (each TF is an independent stream).
 DEFAULT_LIVE_TFS = [Timeframe.M3, Timeframe.M10, Timeframe.M13,
                     Timeframe.M15, Timeframe.M21, Timeframe.M30]
-MAX_1M_BARS = 2880  # 48h of 1m bars per symbol
+#: 1m-bar retention per symbol (also the depth available to checkpoint
+#: backtests). Env-tunable; default 3 days. Persisted to BINACCI_DATA_DIR.
+MAX_1M_BARS = int(os.environ.get("BINACCI_MAX_1M_BARS", "4320"))
 
 
 @dataclass

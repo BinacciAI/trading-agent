@@ -170,16 +170,21 @@ def build_app():
 
         bars = max(300, min(int(bars), 1500))
         cfg = ctx.scfg if strategy == "portfolio" else _config_for(strategy, ctx.scfg)
-        src = make_source(source or _default_source(), ctx.rcfg)
+        src_name = source or _default_source()
+        used = src_name
         try:
-            res = run_backtest(cfg, src, symbol.upper(), Timeframe(timeframe),
-                               bars=bars, deposit_usd=ctx.rcfg.deposit_usd)
-        except Exception as e:
-            return {"error": str(e), "symbol": symbol.upper(), "timeframe": timeframe,
-                    "source": source or _default_source()}
+            res = run_backtest(cfg, make_source(src_name, ctx.rcfg), symbol.upper(),
+                               Timeframe(timeframe), bars=bars, deposit_usd=ctx.rcfg.deposit_usd)
+        except Exception:
+            if src_name == "synthetic":
+                return {"error": "no data", "symbol": symbol.upper(), "timeframe": timeframe, "source": src_name}
+            used = "synthetic"  # graceful fallback until real data has accumulated
+            res = run_backtest(cfg, make_source("synthetic", ctx.rcfg), symbol.upper(),
+                               Timeframe(timeframe), bars=bars, deposit_usd=ctx.rcfg.deposit_usd)
         out = res.summary()
         out["strategy"] = strategy
-        out["source"] = source or _default_source()
+        out["source"] = used
+        out["requested_source"] = src_name
         step = max(1, len(res.equity_curve) // 120)
         out["equity_curve"] = [round(x, 2) for x in res.equity_curve[::step]]
         return out
@@ -201,10 +206,17 @@ def build_app():
         hit = _UNIVERSE_CACHE.get(key)
         if hit and now - hit[0] < 600:
             return {**hit[1], "cached": True}
-        src = make_source(src_name, ctx.rcfg)
-        res = run_universe_backtest(ctx.scfg, src, symbols, Timeframe(timeframe),
-                                    bars=bars, deposit_usd=ctx.rcfg.deposit_usd, eval_every=2)
-        res["source"] = src_name
+        res = run_universe_backtest(ctx.scfg, make_source(src_name, ctx.rcfg), symbols,
+                                    Timeframe(timeframe), bars=bars,
+                                    deposit_usd=ctx.rcfg.deposit_usd, eval_every=2)
+        used = src_name
+        if res["markets_tested"] == 0 and src_name != "synthetic":
+            used = "synthetic"  # real data not accumulated yet -> show synthetic
+            res = run_universe_backtest(ctx.scfg, make_source("synthetic", ctx.rcfg), symbols,
+                                        Timeframe(timeframe), bars=bars,
+                                        deposit_usd=ctx.rcfg.deposit_usd, eval_every=2)
+        res["source"] = used
+        res["requested_source"] = src_name
         res["universe_size"] = len(ctx.scfg.symbols)
         _UNIVERSE_CACHE[key] = (now, res)
         return {**res, "cached": False}
@@ -303,6 +315,39 @@ def build_app():
             },
             "resource": {"url": "/spec", "description": "Backtestable strategy spec",
                          "mimeType": "application/json"},
+        }
+
+    @app.get("/chain")
+    def chain():
+        """BNB AI Agent SDK status — ERC-8004 identity + APEX commerce."""
+        import importlib.util, json, os
+        from pathlib import Path
+
+        have = importlib.util.find_spec("bnbagent") is not None
+        marker = Path(os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data")) / "erc8004.json"
+        reg = None
+        if marker.exists():
+            try:
+                reg = json.loads(marker.read_text())
+            except Exception:
+                reg = None
+        return {
+            "sdk": "bnbagent (BNB AI Agent SDK)",
+            "installed": have,
+            "network": "bsc-testnet" if ctx.rcfg.use_testnet else "bsc",
+            "erc8004": {
+                "registered": bool(reg),
+                "agent_id": (reg or {}).get("agentId"),
+                "tx": (reg or {}).get("tx"),
+                "auto_register": os.environ.get("BINACCI_AUTO_REGISTER", "").lower() in ("1", "true", "yes"),
+            },
+            "apex": {
+                "standard": "ERC-8183",
+                "mounted": have,
+                "job_endpoint": "/apex/job/execute",
+                "deliverable": "backtestable strategy spec (Track-2 skill output)",
+            },
+            "wallet": ctx.rcfg.wallet_address or None,
         }
 
     return app
