@@ -124,6 +124,15 @@ class TwakCLI:
     def balance(self, chain: str = "bsc") -> dict:
         return self.run("wallet", "balance", "--chain", chain)
 
+    # ---- Track-1 on-chain competition registration ----
+    def compete_register(self) -> dict:
+        """`twak compete register` — resolves the agent wallet address and
+        submits the on-chain registration tx to the competition contract."""
+        return self.run("compete", "register")
+
+    def compete_status(self) -> dict:
+        return self.run("compete", "status")
+
 
 # --------------------------------------------------------------------------
 # PancakeSwap spot via TWAK (BSC mainnet)

@@ -92,12 +92,13 @@ def test_portfolio_widens_opportunity():
     assert r_full.max_drawdown_pct < 30.0
 
 
-def test_universe_is_bsc_weighted():
+def test_universe_is_competition_eligible():
     cfg = StrategyConfig()
-    assert len(cfg.symbols) >= 50
-    assert "BNB" in cfg.symbols and "CAKE" in cfg.symbols
-    # BTC swaps as BTCB on BSC
-    assert cfg.chain_symbol("BTC") == "BTCB"
+    # Track-1 eligible BEP-20 set (USDT is the quote, excluded from longs)
+    assert len(cfg.symbols) >= 100
+    assert "CAKE" in cfg.symbols and "ETH" in cfg.symbols
+    assert "USDT" not in cfg.symbols
+    assert cfg.quote == "USDT"
     assert cfg.chain_symbol("CAKE") == "CAKE"
 
 

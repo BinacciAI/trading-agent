@@ -308,15 +308,28 @@ class StrategyConfig(BaseSettings):
     #: quotes use these tickers; swaps use :meth:`chain_symbol`.
     #: Override: BINACCI_SYMBOLS.
     symbols: list[str] = Field(default_factory=lambda: [
-        # BSC-native blue chips (deep PancakeSwap liquidity)
-        "BNB", "CAKE", "TWT", "XVS", "FLOKI", "BSW", "SFP", "ALPACA",
-        "BANANA", "BURGER", "ANKR", "INJ", "FET", "ID", "EDU", "HOOK",
-        "MBOX", "ALICE", "AXS", "C98", "BAKE", "DODO", "ALPHA", "TLM",
-        "CHESS", "HIGH", "DAR", "BEL", "LINA", "RACA", "GMT", "UNFI",
-        "AUTO", "BIFI", "WIN", "TKO", "LISTA", "SANTOS", "LAZIO", "PORTO",
-        # deepest Binance-Peg majors that DO trade on PancakeSwap
-        "BTC", "ETH", "DOGE", "ADA", "DOT", "LINK", "LTC", "AVAX", "TRX",
-        "ATOM", "UNI", "BCH", "ETC", "FIL", "NEAR", "MATIC", "SHIB", "PEPE",
+        # Track-1 competition-eligible BEP-20 tokens (CoinMarketCap list).
+        # Trades OUTSIDE this list do not count toward the competition.
+        # USDT is the quote currency (held/spent), so it's not a long target.
+        "ETH", "USDC", "XRP", "TRX", "DOGE", "ZEC", "ADA", "LINK",
+        "BCH", "DAI", "TON", "USD1", "USDe", "M", "LTC", "AVAX",
+        "SHIB", "XAUt", "WLFI", "H", "DOT", "UNI", "ASTER", "DEXE",
+        "USDD", "ETC", "AAVE", "ATOM", "U", "STABLE", "FIL", "INJ",
+        "NIGHT", "FET", "TUSD", "BONK", "PENGU", "CAKE", "SIREN", "LUNC",
+        "ZRO", "KITE", "FDUSD", "BEAT", "PIEVERSE", "BTT", "NFT", "EDGE",
+        "FLOKI", "LDO", "B", "FF", "PENDLE", "NEX", "STG", "AXS",
+        "TWT", "HOME", "RAY", "COMP", "GWEI", "XCN", "GENIUS", "XPL",
+        "BAT", "SKYAI", "APE", "IP", "SFP", "TAG", "NXPC", "AB",
+        "SAHARA", "1INCH", "CHEEMS", "BANANAS31", "RIVER", "MYX", "RAVE", "SNX",
+        "FORM", "LAB", "HTX", "USDf", "CTM", "BDX", "SLX", "UB",
+        "DUCKY", "FRAX", "BILL", "WFI", "KOGE", "ALE", "FRXUSD", "USDF",
+        "GOMINING", "VCNT", "GUA", "DUSD", "SMILEK", "0G", "BEAM", "MY",
+        "SOON", "REAL", "Q", "AIOZ", "ZIG", "YFI", "TAC", "lisUSD",
+        "CYS", "ZAMA", "TRIA", "HUMA", "PLUME", "ZIL", "XPR", "ZETA",
+        "BabyDoge", "NILA", "ROSE", "VELO", "UAI", "BRETT", "OPEN", "BSB",
+        "TOSHI", "BAS", "ACH", "AXL", "LUR", "ELF", "KAVA", "APR",
+        "IRYS", "EURI", "XUSD", "BARD", "DUSK", "SUSHI", "PEAQ", "COAI",
+        "BDCA", "XAUM",
     ])
     #: CMC ticker -> on-chain BSC swap symbol, for the few that differ.
     #: (BTC trades as the Binance-Peg BTCB token on BSC, etc.) Identity for
@@ -447,6 +460,9 @@ class RuntimeConfig(BaseSettings):
     bsc_testnet_rpc: str = "https://data-seed-prebsc-1-s1.bnbchain.org:8545"
     wallet_address: str = ""
     use_testnet: bool = True
+    #: Track-1 on-chain competition contract (records the agent wallet on the
+    #: immutable participant list). Registration via `twak compete register`.
+    competition_contract: str = "0x212c61b9b72c95d95bf29cf032f5e5635629aed5"
 
     # Agent API server
     api_host: str = "0.0.0.0"

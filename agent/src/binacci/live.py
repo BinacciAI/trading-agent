@@ -229,7 +229,10 @@ class LiveLoop:
         quotes = 1 credit per poll (one batched call); macro = 1 per refresh;
         F&G = 1 per refresh (0 if disabled)."""
         day = 86400
-        q = day / max(self.rcfg.poll_seconds, 10)
+        # CMC charges 1 credit per up to 100 symbols, so >100 symbols = 2+/call.
+        n = len(self.poll_symbols())
+        credits_per_quote = max(1, (n + 99) // 100)
+        q = (day / max(self.rcfg.poll_seconds, 10)) * credits_per_quote
         m = day / max(self.rcfg.macro_refresh_seconds, 60)
         fg = (day / self.rcfg.fear_greed_refresh_seconds) if self.rcfg.fear_greed_refresh_seconds else 0
         per_day = q + m + fg

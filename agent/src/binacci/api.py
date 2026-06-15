@@ -351,6 +351,39 @@ def build_app():
             "wallet": ctx.rcfg.wallet_address or None,
         }
 
+    @app.get("/compete")
+    def compete():
+        """Track-1 competition status: contract + on-chain registration."""
+        from .venues import TwakCLI
+
+        twak = TwakCLI()
+        status = {}
+        if twak.installed:
+            try:
+                status = twak.compete_status()
+            except Exception as e:
+                status = {"error": str(e)[:200]}
+        return {
+            "track": 1,
+            "contract": ctx.rcfg.competition_contract,
+            "explorer": f"https://bsctrace.com/address/{ctx.rcfg.competition_contract}",
+            "wallet": ctx.rcfg.wallet_address or None,
+            "twak_installed": twak.installed,
+            "registration": status,
+        }
+
+    @app.post("/compete/register")
+    def compete_register():
+        """Register the agent on-chain for the Track-1 live competition."""
+        from .venues import TwakCLI
+
+        twak = TwakCLI()
+        if not twak.installed:
+            return {"ok": False, "error": "twak CLI not installed"}
+        res = twak.compete_register()
+        ok = not bool(res.get("error"))
+        return {"ok": ok, "contract": ctx.rcfg.competition_contract, "result": res}
+
     @app.get("/regime")
     def regime():
         """Macro Regime Classifier (CMC-data skill) — live classification."""
