@@ -12,20 +12,30 @@ type Status = {
     universe?: { markets?: number; candidates: number } };
 };
 type Pos = {
-  symbol: string; tf: string; side?: string; strategy?: string; level_kind?: string; state: string;
+  symbol: string; tf: string; side?: string; market?: string; strategy?: string; level_kind?: string; state: string;
   avg_entry: number; notional_usd: number; gain_pct: number; peak_gain_pct: number;
   stop_pct: number | null; target_pct: number; averaging_done: number;
 };
-type Trade = { symbol: string; tf: string; side?: string; strategy?: string; pnl_usd: number; reason: string; closed: string | null };
+type Trade = { symbol: string; tf: string; side?: string; market?: string; strategy?: string; pnl_usd: number; reason: string; closed: string | null };
 type Trace = { symbol: string; tf: string; ts: string; strategy?: string; entered: boolean;
   gates: { step: string; passed: boolean; detail: string }[] };
 type Strat = { active: string[]; open_positions_by_strategy: Record<string, number>;
   realized_pnl_by_strategy: Record<string, number> };
 
 const SL: Record<string, string> = { reaction: "Reaction", momentum_breakout: "Breakout",
-  mean_reversion: "Mean-Rev", trend_follow: "Trend", volatility_squeeze: "Squeeze" };
-const sLabel = (s?: string) => (s ? SL[s] ?? s : "—");
+  mean_reversion: "Mean-Rev", trend_follow: "Trend", volatility_squeeze: "Squeeze",
+  vwap_reversion: "VWAP", liquidity_sweep: "Sweep" };
+const sLabel = (s?: string) => (s ? SL[s] ?? s.replace(/_/g, " ") : "—");
 const Side = ({ s }: { s?: string }) => <span className={s === "short" ? "badge red" : "badge green"}>{(s ?? "long").toUpperCase()}</span>;
+const Book = ({ m }: { m?: string }) => <span className={m === "perp" ? "badge gold" : "badge gray"}>{(m ?? "spot").toUpperCase()}</span>;
+
+// price formatter: more decimals for sub-dollar tokens, fewer for large prices
+const px = (n: number) => {
+  if (n == null) return "—";
+  const d = n >= 100 ? 2 : n >= 1 ? 4 : n >= 0.01 ? 5 : 8;
+  return n.toLocaleString("en-US", { maximumFractionDigits: d });
+};
+const pct = (n: number) => `${n >= 0 ? "+" : ""}${fmt(n)}%`;
 
 function Spark({ data, up }: { data: number[]; up: boolean }) {
   if (!data || data.length < 2) return <div style={{ height: 54 }} />;
@@ -130,24 +140,28 @@ export default function Page() {
         <h2 className="section">Open Positions</h2>
         <div className="tbl-wrap">
           <table>
-            <thead><tr><th>Market</th><th>Strategy</th><th>TF</th><th>State</th><th>Avg Entry</th><th>Size</th>
-              <th>Gain</th><th>Peak</th><th>Stop</th><th>Target</th><th>Avg</th></tr></thead>
+            <thead><tr>
+              <th>Market</th><th>Side</th><th>Book</th><th>Strategy</th><th>TF</th><th>State</th>
+              <th className="num">Entry</th><th className="num">Size</th><th className="num">Gain</th>
+              <th className="num">Peak</th><th className="num">Stop</th><th className="num">Target</th><th className="num">Adds</th>
+            </tr></thead>
             <tbody>
-              {positions.length === 0 && <tr><td colSpan={12}>no open positions — agents watching, waiting for gate confirmation</td></tr>}
+              {positions.length === 0 && <tr><td colSpan={13} className="empty">No open positions — agents watching, waiting for gate confirmation.</td></tr>}
               {positions.map((p, i) => (
                 <tr key={i}>
-                  <td style={{ color: "var(--text-primary)", fontWeight: 600 }}>{p.symbol}/USDT</td>
+                  <td className="mkt">{p.symbol}<span className="quote">/USDT</span></td>
                   <td><Side s={p.side} /></td>
+                  <td><Book m={p.market} /></td>
                   <td><span className="badge cyan">{sLabel(p.strategy)}</span></td>
-                  <td className="num">{p.tf}</td>
-                  <td><span className={p.state === "sl_in_profit" ? "badge green" : "badge gold"}>{p.state === "sl_in_profit" ? "LOCKED GREEN" : "ACTIVE"}</span></td>
-                  <td className="num">{fmt(p.avg_entry)}</td>
+                  <td className="num dim">{p.tf}</td>
+                  <td><span className={p.state === "sl_in_profit" ? "badge green" : "badge gold"}>{p.state === "sl_in_profit" ? "LOCKED" : "ACTIVE"}</span></td>
+                  <td className="num">{px(p.avg_entry)}</td>
                   <td className="num">${fmt(p.notional_usd)}</td>
-                  <td className={p.gain_pct >= 0 ? "num pos" : "num neg"}>{p.gain_pct >= 0 ? "+" : ""}{p.gain_pct}%</td>
-                  <td className="num">+{p.peak_gain_pct}%</td>
-                  <td className="num">{p.stop_pct != null ? "+" + p.stop_pct + "%" : "—"}</td>
-                  <td className="num">{p.target_pct}%</td>
-                  <td className="num">{p.averaging_done}/2</td>
+                  <td className={p.gain_pct >= 0 ? "num pos" : "num neg"}>{pct(p.gain_pct)}</td>
+                  <td className="num dim">{pct(p.peak_gain_pct)}</td>
+                  <td className="num dim">{p.stop_pct != null ? pct(p.stop_pct) : "—"}</td>
+                  <td className="num dim">{fmt(p.target_pct)}%</td>
+                  <td className="num dim">{p.averaging_done}/2</td>
                 </tr>
               ))}
             </tbody>
@@ -157,16 +171,16 @@ export default function Page() {
         <h2 className="section">Recent Decisions</h2>
         <div className="tbl-wrap">
           <table>
-            <thead><tr><th>Time</th><th>Market</th><th>Strategy</th><th>TF</th><th>Gate Audit</th><th>Result</th></tr></thead>
+            <thead><tr><th className="num">Time</th><th>Market</th><th>Strategy</th><th>TF</th><th>Gate Audit</th><th>Result</th></tr></thead>
             <tbody>
-              {traces.length === 0 && <tr><td colSpan={6}>no evaluations yet — markets warming up</td></tr>}
+              {traces.length === 0 && <tr><td colSpan={6} className="empty">No evaluations yet — markets warming up.</td></tr>}
               {[...traces].reverse().slice(0, 14).map((t, i) => (
                 <tr key={i}>
-                  <td className="num">{new Date(t.ts).toLocaleTimeString()}</td>
-                  <td style={{ color: "var(--text-primary)", fontWeight: 600 }}>{t.symbol}</td>
+                  <td className="num dim">{new Date(t.ts).toLocaleTimeString()}</td>
+                  <td className="mkt">{t.symbol}</td>
                   <td><span className="badge cyan">{sLabel(t.strategy)}</span></td>
-                  <td className="num">{t.tf}</td>
-                  <td>{t.gates.map((g, j) => (<span key={j} className={g.passed ? "gate ok" : "gate no"} title={g.detail}>{g.step.replace(/_/g, " ")}</span>))}</td>
+                  <td className="num dim">{t.tf}</td>
+                  <td className="gates-cell">{t.gates.map((g, j) => (<span key={j} className={g.passed ? "gate ok" : "gate no"} title={g.detail}>{g.step.replace(/_/g, " ")}</span>))}</td>
                   <td>{t.entered ? <span className="badge green">ENTERED</span> : <span className="badge gray">SKIPPED</span>}</td>
                 </tr>
               ))}
@@ -177,18 +191,19 @@ export default function Page() {
         <h2 className="section">Closed Trades</h2>
         <div className="tbl-wrap">
           <table>
-            <thead><tr><th>Market</th><th>Side</th><th>Strategy</th><th>TF</th><th>Exit</th><th>P/L</th><th>Closed</th></tr></thead>
+            <thead><tr><th>Market</th><th>Side</th><th>Book</th><th>Strategy</th><th>TF</th><th>Exit</th><th className="num">P/L</th><th className="num">Closed</th></tr></thead>
             <tbody>
-              {trades.length === 0 && <tr><td colSpan={7}>no closed trades</td></tr>}
+              {trades.length === 0 && <tr><td colSpan={8} className="empty">No closed trades yet.</td></tr>}
               {[...trades].reverse().slice(0, 20).map((t, i) => (
                 <tr key={i}>
-                  <td style={{ color: "var(--text-primary)", fontWeight: 600 }}>{t.symbol}/USDT</td>
+                  <td className="mkt">{t.symbol}<span className="quote">/USDT</span></td>
                   <td><Side s={t.side} /></td>
+                  <td><Book m={t.market} /></td>
                   <td><span className="badge cyan">{sLabel(t.strategy)}</span></td>
-                  <td className="num">{t.tf}</td>
-                  <td><span className={t.reason === "take_profit" ? "badge green" : t.reason === "kill_switch" || t.reason === "hard_stop" ? "badge red" : "badge cyan"}>{t.reason.replace(/_/g, " ").toUpperCase()}</span></td>
+                  <td className="num dim">{t.tf}</td>
+                  <td><span className={t.reason === "take_profit" ? "badge green" : t.reason === "kill_switch" || t.reason === "hard_stop" ? "badge red" : "badge gold"}>{t.reason.replace(/_/g, " ").toUpperCase()}</span></td>
                   <td className={t.pnl_usd >= 0 ? "num pos" : "num neg"}>{t.pnl_usd >= 0 ? "+" : ""}{fmt(t.pnl_usd)}</td>
-                  <td className="num">{t.closed ? new Date(t.closed).toLocaleString() : "—"}</td>
+                  <td className="num dim">{t.closed ? new Date(t.closed).toLocaleString() : "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -205,7 +220,7 @@ export default function Page() {
               return (
                 <div key={i} className={t.entered ? "feed-item entered" : "feed-item blocked"}>
                   <div className="when">{new Date(t.ts).toLocaleTimeString()} — {t.symbol} {t.tf} · {sLabel(t.strategy)}</div>
-                  <div className="what">{t.entered ? <><b>Entered long</b> — all gates confirmed, limit filled.</> : <><b>Skipped</b> — {lg ? (lg.detail || lg.step.replace(/_/g, " ") + " not confirmed") : "awaiting confirmation"}.</>}</div>
+                  <div className="what">{t.entered ? <><b>Entered</b> — all gates confirmed, limit filled.</> : <><b>Skipped</b> — {lg ? (lg.detail || lg.step.replace(/_/g, " ") + " not confirmed") : "awaiting confirmation"}.</>}</div>
                 </div>
               );
             })}

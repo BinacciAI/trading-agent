@@ -1,0 +1,6 @@
+.git
+dashboard
+docs
+skills
+**/__pycache__
+**/*.pyc
