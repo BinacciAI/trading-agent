@@ -95,6 +95,15 @@ class ExecutionEngine:
             return False
         if self.slots_free() <= 0:
             return False
+        # per-book capacity: neither spot nor perps may hog the whole budget,
+        # so both books stay live at the same time.
+        market = self.cfg.market_for(strategy)
+        cap = self.cfg.book_cap()
+        in_book = sum(1 for p in self.positions
+                      if p.state is not PositionState.CLOSED
+                      and self.cfg.market_for(p.meta.get("strategy", "reaction")) == market)
+        if in_book >= cap:
+            return False
         # one position per (symbol, timeframe, strategy) — independent
         # strategies may each hold a position on the same market.
         for p in self.positions:

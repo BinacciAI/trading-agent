@@ -65,14 +65,15 @@ def _default_source() -> str:
 
 def _book_split(ctx) -> dict:
     """Live spot vs perps breakdown — Binacci runs both books at once."""
+    mkt = ctx.scfg.market_for
     out = {"spot": {"open": 0, "long": 0, "short": 0, "realized": 0.0},
            "perp": {"open": 0, "long": 0, "short": 0, "realized": 0.0}}
     for p in ctx.engine.open_positions():
-        b = out.get(p.meta.get("market", "spot"), out["spot"])
+        b = out[mkt(p.meta.get("strategy", "reaction"))]
         b["open"] += 1
         b["long" if p.side.value == "long" else "short"] += 1
     for t in ctx.engine.closed:
-        b = out.get(t.position.meta.get("market", "spot"), out["spot"])
+        b = out[mkt(t.position.meta.get("strategy", "reaction"))]
         b["realized"] += t.pnl_usd
     for b in out.values():
         b["realized"] = round(b["realized"], 2)
@@ -121,7 +122,7 @@ def build_app():
             px = ctx.prices.get(p.symbol, p.avg_entry)
             out.append({
                 "symbol": p.symbol, "tf": p.timeframe.value, "side": p.side.value,
-                "market": p.meta.get("market", "spot"),
+                "market": ctx.scfg.market_for(p.meta.get("strategy", "reaction")),
                 "strategy": p.meta.get("strategy", "reaction"),
                 "level_kind": p.meta.get("level_kind", ""),
                 "state": p.state.value, "avg_entry": p.avg_entry,
@@ -139,7 +140,7 @@ def build_app():
             "symbol": t.position.symbol, "tf": t.position.timeframe.value,
             "strategy": t.position.meta.get("strategy", "reaction"),
             "side": t.position.side.value,
-            "market": t.position.meta.get("market", "spot"),
+            "market": ctx.scfg.market_for(t.position.meta.get("strategy", "reaction")),
             "pnl_usd": round(t.pnl_usd, 2), "reason": t.reason,
             "closed": t.position.closed_ts.isoformat() if t.position.closed_ts else None,
         } for t in ctx.engine.closed]
@@ -174,6 +175,8 @@ def build_app():
             "live_timeframes": [tf.value for tf in ctx.loop.live_tfs],
             "trade_mode": "spot+perps",
             "allow_shorts": ctx.scfg.allow_shorts,
+            "perps_leverage": float(__import__("os").environ.get("BINACCI_PERPS_LEVERAGE", "2")),
+            "book_cap": ctx.scfg.book_cap(),
             "perp_strategies": sorted(ctx.scfg.perp_strategies),
             "spot_strategies": sorted(s.name for s in ctx.orchestrator.strategies
                                       if ctx.scfg.market_for(s.name) == "spot"),

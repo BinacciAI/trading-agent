@@ -370,6 +370,9 @@ class StrategyConfig(BaseSettings):
     perp_strategies: set[str] = Field(default_factory=lambda: {
         "mean_reversion", "volatility_squeeze", "vwap_reversion", "liquidity_sweep",
     })
+    #: Max share of the slot budget a single book (spot OR perps) may hold, so
+    #: neither starves the other — guarantees perps stays live alongside spot.
+    book_share: float = 0.7
 
     #: Named risk preset. Applied by :meth:`load` (and the runtime switcher),
     #: NOT by the bare constructor — so unit tests keep the raw defaults.
@@ -421,8 +424,14 @@ class StrategyConfig(BaseSettings):
 
     def market_for(self, strategy: str) -> str:
         """Which venue a strategy trades on: 'perp' (both-ways, leverage) or
-        'spot' (long-only). Both books run simultaneously."""
+        'spot' (long-only). Both books run simultaneously. Deterministic —
+        the single source of truth for a position's book."""
         return "perp" if strategy in self.perp_strategies else "spot"
+
+    def book_cap(self) -> int:
+        """Max open positions a single book may hold (reserves room for the
+        other book so spot and perps are always live together)."""
+        return max(1, int(self.risk.max_positions * self.book_share + 0.999))
 
     def target_for(self, tf: Timeframe) -> float:
         return self.targets_pct.get(tf, DEFAULT_TARGETS[tf])

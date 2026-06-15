@@ -102,11 +102,13 @@ def build_memory_md(loop) -> str:
     L.append(f"- **Universe:** {len(scfg.symbols)} eligible markets · {warm} warm · "
              f"polls {loop.polls} · errors {loop.errors}")
     op_all = engine.open_positions()
-    pp = [p for p in op_all if p.meta.get("market") == "perp"]
+    pp = [p for p in op_all if scfg.market_for(p.meta.get("strategy", "reaction")) == "perp"]
     sp_n = len(op_all) - len(pp)
     pl = sum(1 for p in pp if p.side.value == "long")
+    import os as _os
+    lev = _os.environ.get("BINACCI_PERPS_LEVERAGE", "2")
     L.append(f"- **Books (both live at once):** SPOT {sp_n} long · "
-             f"PERPS {len(pp)} ({pl} long / {len(pp) - pl} short)\n")
+             f"PERPS {len(pp)} ({pl} long / {len(pp) - pl} short) @ {lev}x\n")
 
     L.append("## Active Strategies")
     for s in [st.name for st in orch.strategies]:

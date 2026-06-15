@@ -175,7 +175,8 @@ class LiveLoop:
             self.orch.on_close = self._venue_close
 
     def _venue_for(self, pos) -> Venue:
-        return self.perp_venue if pos.meta.get("market") == "perp" else self.spot_venue
+        market = self.scfg.market_for(pos.meta.get("strategy", "reaction"))
+        return self.perp_venue if market == "perp" else self.spot_venue
 
     # ---------------- venue hooks ----------------
 
@@ -188,7 +189,7 @@ class LiveLoop:
             })
             return
         chain_sym = self.scfg.chain_symbol(pos.symbol)
-        market = pos.meta.get("market", "spot")
+        market = self.scfg.market_for(pos.meta.get("strategy", "reaction"))
         res = self._venue_for(pos).place_limit(chain_sym, pos.side, pos.avg_entry, pos.notional_usd)
         self.venue_log.append({
             "ts": datetime.now(timezone.utc).isoformat(), "action": "open",
