@@ -148,8 +148,17 @@ class Position:
         raw = (price - e) / e * 100.0
         return raw if self.side is Side.LONG else -raw
 
+    @property
+    def leverage(self) -> float:
+        """Spot = 1x; perps carry BINACCI_PERPS_LEVERAGE (stamped at open)."""
+        try:
+            return max(1.0, float(self.meta.get("leverage", 1.0) or 1.0))
+        except (TypeError, ValueError):
+            return 1.0
+
     def unrealized_pnl_usd(self, price: float) -> float:
-        return self.notional_usd * self.gain_pct(price) / 100.0
+        # margin x price-move% x leverage  -> a 20x perp earns 20x the move
+        return self.notional_usd * self.gain_pct(price) / 100.0 * self.leverage
 
 
 def utcnow() -> datetime:

@@ -373,6 +373,8 @@ class StrategyConfig(BaseSettings):
     #: Max share of the slot budget a single book (spot OR perps) may hold, so
     #: neither starves the other — guarantees perps stays live alongside spot.
     book_share: float = 0.7
+    #: Perps leverage — P/L on perp positions scales by this. Spot is 1x.
+    perps_leverage: float = 2.0
 
     #: Named risk preset. Applied by :meth:`load` (and the runtime switcher),
     #: NOT by the bare constructor — so unit tests keep the raw defaults.
@@ -396,6 +398,10 @@ class StrategyConfig(BaseSettings):
         path = os.environ.get("BINACCI_STRATEGY_FILE", "")
         cfg = cls.from_yaml(path) if (path and Path(path).exists()) else cls()
         cfg.apply_risk_mode(cfg.risk_mode)
+        try:
+            cfg.perps_leverage = max(1.0, float(os.environ.get("BINACCI_PERPS_LEVERAGE", cfg.perps_leverage)))
+        except (TypeError, ValueError):
+            pass
         return cfg
 
     def apply_risk_mode(self, mode: RiskMode | str) -> "StrategyConfig":

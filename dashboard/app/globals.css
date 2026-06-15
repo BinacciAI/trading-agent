@@ -215,6 +215,10 @@ th, td {
 }
 th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.num { font-family: var(--font-mono); color: var(--text-primary); }
+/* Tight, left-grouped columns: every column hugs its content and the LAST
+   column absorbs the slack at the right edge (no more justified gaps). */
+th, td { width: 1%; }
+th:last-child, td:last-child { width: auto; text-align: left; }
 tbody tr:last-child td { border-bottom: none; }
 th {
   position: sticky; top: 0; z-index: 2;
@@ -230,7 +234,7 @@ td.dim { color: var(--text-muted); }            /* secondary numerics (peak/stop
 td.mkt { color: var(--text-primary); font-weight: 600; font-size: 13px; }
 td.mkt .quote { color: var(--text-muted); font-weight: 400; font-size: 11px; }
 td.empty { text-align: center; color: var(--text-muted); padding: 26px 16px; font-size: 12.5px; }
-td.gates-cell { white-space: normal; max-width: 460px; line-height: 1.9; }
+td.gates-cell { width: auto; white-space: normal; max-width: 460px; line-height: 1.9; }
 /* zebra striping + a warm hover that doesn't fight the row colors */
 tbody tr { transition: background 0.12s; }
 tbody tr:nth-child(even) td { background: rgba(255, 255, 255, 0.014); }

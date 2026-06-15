@@ -121,6 +121,8 @@ class ExecutionEngine:
             return None
         notional = self.entry_notional_usd()
         qty = notional / fill_price
+        market = self.cfg.market_for(strategy)
+        leverage = self.cfg.perps_leverage if market == "perp" else 1.0
         pos = Position(
             symbol=sig.symbol,
             timeframe=sig.timeframe,
@@ -130,7 +132,8 @@ class ExecutionEngine:
             opened_ts=ts,
             meta={"level": sig.level_price, "strategy": strategy,
                   "gates": [g.step.value for g in sig.gates],
-                  **dict(sig.meta or {})},
+                  **dict(sig.meta or {}),
+                  "market": market, "leverage": leverage},
         )
         pos.fills.append(Fill(ts=ts, price=fill_price, qty=qty, notional_usd=notional, tag="entry"))
         self.positions.append(pos)

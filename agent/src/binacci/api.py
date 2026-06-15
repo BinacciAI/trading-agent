@@ -123,6 +123,7 @@ def build_app():
             out.append({
                 "symbol": p.symbol, "tf": p.timeframe.value, "side": p.side.value,
                 "market": ctx.scfg.market_for(p.meta.get("strategy", "reaction")),
+                "leverage": p.meta.get("leverage", 1),
                 "strategy": p.meta.get("strategy", "reaction"),
                 "level_kind": p.meta.get("level_kind", ""),
                 "state": p.state.value, "avg_entry": p.avg_entry,
