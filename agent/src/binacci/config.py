@@ -434,4 +434,18 @@ class RuntimeConfig(BaseSettings):
     warmup_backfill: bool = True
     warmup_backfill_bars: int = 320
     #: Liquidity verification: "auto" (verify when twak is installed),
-    #: "true", or "false". Unverified symbols never reach the live
+    #: "true", or "false". Unverified symbols never reach the live venue.
+    verify_liquidity: str = "auto"
+    #: Drop candidates whose $1 test-quote price impact exceeds this (%).
+    max_price_impact_pct: float = 1.0
+
+    # Trust Wallet Agent Kit / chain
+    twak_endpoint: str = ""
+    bsc_rpc: str = "https://bsc-dataseed.bnbchain.org"
+    bsc_testnet_rpc: str = "https://data-seed-prebsc-1-s1.bnbchain.org:8545"
+    wallet_address: str = ""
+    use_testnet: bool = True
+
+    # Agent API server
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000

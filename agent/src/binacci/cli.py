@@ -116,6 +116,38 @@ def cmd_register(args) -> int:
     return 0 if res else 1
 
 
+def cmd_portfolio(args) -> int:
+    """Backtest the whole BNB universe on one data source and print a table."""
+    from .backtest import run_universe_backtest
+    from .config import RuntimeConfig
+    from .data import make_source
+
+    cfg = StrategyConfig.load()
+    rcfg = RuntimeConfig()
+    syms = (cfg.symbols if args.symbols.lower() == "all"
+            else [s.strip().upper() for s in args.symbols.split(",")])
+    if args.limit:
+        syms = syms[: args.limit]
+    src = make_source(args.source, rcfg)
+    res = run_universe_backtest(cfg, src, syms, Timeframe(args.timeframe),
+                                bars=args.bars, deposit_usd=args.deposit,
+                                eval_every=args.eval_every)
+    print(f"\nUNIVERSE BACKTEST  source={args.source}  tf={res['timeframe']}  "
+          f"risk={cfg.risk_mode.value}")
+    print(f"{'MARKET':<8}{'TRADES':>7}{'WIN%':>7}{'PNL$':>9}{'RET%':>8}{'DD%':>7}{'PF':>8}")
+    for p in res["per_symbol"]:
+        pf = "inf" if p["profit_factor"] >= 999 else f"{p['profit_factor']:.2f}"
+        print(f"{p['symbol']:<8}{p['trades']:>7}{p['win_rate_pct']:>7.1f}"
+              f"{p['total_pnl_usd']:>9.2f}{p['return_pct']:>8.2f}{p['max_drawdown_pct']:>7.2f}{pf:>8}")
+    if res["markets_skipped"]:
+        print(f"\nskipped (insufficient data): {', '.join(res['markets_skipped'])}")
+    print(f"\nAGGREGATE  markets={res['markets_tested']}  winners={res['winners']}  "
+          f"losers={res['losers']}  trades={res['trades']}  win%={res['win_rate_pct']}  "
+          f"total_pnl=${res['total_pnl_usd']}  avg_ret/mkt={res['avg_return_pct_per_market']}%  "
+          f"worst_dd={res['worst_drawdown_pct']}%")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="binacci", description="Binacci agent CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -143,6 +175,16 @@ def main(argv=None) -> int:
 
     st = sub.add_parser("strategies", help="list the strategy catalog")
     st.set_defaults(fn=cmd_strategies)
+
+    up = sub.add_parser("portfolio", help="backtest the whole universe on one source")
+    up.add_argument("--symbols", default="all", help="'all' or comma list")
+    up.add_argument("--timeframe", default="15m")
+    up.add_argument("--bars", type=int, default=600)
+    up.add_argument("--deposit", type=float, default=1000.0)
+    up.add_argument("--source", default="synthetic", help="synthetic | cmc | checkpoint")
+    up.add_argument("--limit", type=int, default=0, help="cap number of markets (0=all)")
+    up.add_argument("--eval-every", dest="eval_every", type=int, default=1)
+    up.set_defaults(fn=cmd_portfolio)
 
     pp = sub.add_parser("paper", help="multi-symbol paper session")
     pp.add_argument("--symbols", default="BNB,BTC,ETH,CAKE,SOL")

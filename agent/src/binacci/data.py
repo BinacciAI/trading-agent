@@ -294,3 +294,78 @@ def resample_candles(candles: list[Candle], tf: Timeframe) -> list[Candle]:
     ).dropna()
     return [Candle(ts=i.to_pydatetime(), open=r.open, high=r.high, low=r.low,
                    close=r.close, volume=r.volume) for i, r in agg.iterrows()]
+
+
+# --------------------------------------------------------------------------
+# Real-data candle sources (CMC historical + the agent's own accumulation)
+# --------------------------------------------------------------------------
+
+@dataclass
+class CMCSource:
+    """CandleSource backed by CMC historical OHLCV. Requires a CMC plan that
+    includes /v2/cryptocurrency/ohlcv/historical. Results are cached per
+    (symbol, tf, bars) for the lifetime of the source."""
+
+    client: "CMCClient"
+    _cache: dict = None
+
+    def history(self, symbol: str, tf: Timeframe, bars: int) -> list[Candle]:
+        if self._cache is None:
+            self._cache = {}
+        key = (symbol, tf.value, bars)
+        if key not in self._cache:
+            try:
+                self._cache[key] = self.client.ohlcv_historical(symbol, tf, bars)
+            except Exception:
+                self._cache[key] = []
+        return self._cache[key]
+
+
+@dataclass
+class CheckpointSource:
+    """CandleSource built from the agent's OWN accumulated 1-minute bars
+    (BINACCI_DATA_DIR/{symbol}_1m.json), resampled to the requested TF. This
+    is real CMC-quote-derived data the live loop has been collecting — no
+    OHLCV plan required. The honest 'historical from live' path."""
+
+    data_dir: "object"  # pathlib.Path
+
+    def history(self, symbol: str, tf: Timeframe, bars: int) -> list[Candle]:
+        import json
+        from pathlib import Path
+
+        p = Path(self.data_dir) / f"{symbol}_1m.json"
+        if not p.exists():
+            return []
+        try:
+            rows = json.loads(p.read_text())
+        except Exception:
+            return []
+        candles = []
+        for r in rows:
+            try:
+                ts, o, h, l, c, v = r
+                candles.append(Candle(ts=datetime.fromisoformat(ts), open=o, high=h,
+                                      low=l, close=c, volume=v))
+            except Exception:
+                continue
+        if tf.minutes != 1 and candles:
+            candles = resample_candles(candles, tf)
+        return candles[-bars:]
+
+
+def make_source(name: str, rcfg: Optional[RuntimeConfig] = None,
+                data_dir: "object" = None) -> CandleSource:
+    """Source factory: 'synthetic' (default) | 'cmc' | 'checkpoint'/'live'."""
+    import os
+    from pathlib import Path
+
+    name = (name or "synthetic").lower()
+    if name == "cmc":
+        if rcfg is None:
+            rcfg = RuntimeConfig()
+        return CMCSource(client=CMCClient(rcfg))
+    if name in ("checkpoint", "live"):
+        dd = data_dir or os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data")
+        return CheckpointSource(data_dir=Path(dd))
+    return SyntheticSource()

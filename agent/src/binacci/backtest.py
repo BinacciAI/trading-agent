@@ -197,3 +197,48 @@ def run_portfolio_backtest(
         s: run_backtest(cfg, source, s, tf, bars=bars, deposit_usd=deposit_usd)
         for s in symbols
     }
+
+
+def run_universe_backtest(
+    cfg: StrategyConfig,
+    source: CandleSource,
+    symbols: list[str],
+    tf: Timeframe,
+    bars: int = 600,
+    deposit_usd: float = 1000.0,
+    eval_every: int = 1,
+) -> dict:
+    """Backtest the WHOLE universe on one source and aggregate it. Each
+    symbol is run with its own deposit (independent books); symbols whose
+    source returns too little data are skipped, not fatal — so this works on
+    CMC historical (plan-gated), the agent's accumulated 1m checkpoints, or
+    synthetic alike. Returns per-symbol summaries + a portfolio roll-up."""
+    results: list[BacktestResult] = []
+    skipped: list[str] = []
+    for s in symbols:
+        try:
+            results.append(run_backtest(cfg, source, s, tf, bars=bars,
+                                        deposit_usd=deposit_usd, eval_every=eval_every))
+        except Exception:
+            skipped.append(s)
+    trades = sum(r.trades for r in results)
+    wins = sum(r.wins for r in results)
+    total_pnl = sum(r.total_pnl_usd for r in results)
+    worst_dd = max((r.max_drawdown_pct for r in results), default=0.0)
+    per = [r.summary() for r in results]
+    per.sort(key=lambda x: x["total_pnl_usd"], reverse=True)
+    return {
+        "timeframe": tf.value,
+        "markets_tested": len(results),
+        "markets_skipped": skipped,
+        "deposit_usd_per_market": deposit_usd,
+        "trades": trades,
+        "win_rate_pct": round(wins / trades * 100, 1) if trades else 0.0,
+        "total_pnl_usd": round(total_pnl, 2),
+        "avg_return_pct_per_market": round(
+            sum(r.return_pct for r in results) / len(results), 3) if results else 0.0,
+        "worst_drawdown_pct": round(worst_dd, 2),
+        "winners": sum(1 for r in results if r.total_pnl_usd > 0),
+        "losers": sum(1 for r in results if r.total_pnl_usd <= 0),
+        "per_symbol": per,
+    }

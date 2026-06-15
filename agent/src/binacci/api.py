@@ -42,6 +42,17 @@ def get_context() -> AgentContext:
     return _ctx
 
 
+#: cache for the heavy universe backtest: key -> (ts, result)
+_UNIVERSE_CACHE: dict = {}
+
+
+def _default_source() -> str:
+    """Default backtest data source (BINACCI_BACKTEST_SOURCE), e.g. set
+    'cmc' on Railway where the CMC key + OHLCV plan exist."""
+    import os
+    return os.environ.get("BINACCI_BACKTEST_SOURCE", "synthetic")
+
+
 def build_app():
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
@@ -150,20 +161,53 @@ def build_app():
 
     @app.get("/backtest")
     def backtest(symbol: str = "BNB", timeframe: str = "15m",
-                 strategy: str = "portfolio", bars: int = 800):
-        """On-demand verification backtest for the Backtests page."""
+                 strategy: str = "portfolio", bars: int = 800, source: str = ""):
+        """On-demand verification backtest for the Backtests page.
+        source: synthetic (default) | cmc | checkpoint/live."""
         from .backtest import run_backtest
+        from .data import make_source
         from .skill import _config_for
 
         bars = max(300, min(int(bars), 1500))
         cfg = ctx.scfg if strategy == "portfolio" else _config_for(strategy, ctx.scfg)
-        res = run_backtest(cfg, SyntheticSource(), symbol.upper(),
-                           Timeframe(timeframe), bars=bars, deposit_usd=ctx.rcfg.deposit_usd)
+        src = make_source(source or _default_source(), ctx.rcfg)
+        try:
+            res = run_backtest(cfg, src, symbol.upper(), Timeframe(timeframe),
+                               bars=bars, deposit_usd=ctx.rcfg.deposit_usd)
+        except Exception as e:
+            return {"error": str(e), "symbol": symbol.upper(), "timeframe": timeframe,
+                    "source": source or _default_source()}
         out = res.summary()
         out["strategy"] = strategy
+        out["source"] = source or _default_source()
         step = max(1, len(res.equity_curve) // 120)
         out["equity_curve"] = [round(x, 2) for x in res.equity_curve[::step]]
         return out
+
+    @app.get("/portfolio-backtest")
+    def portfolio_backtest(timeframe: str = "15m", bars: int = 500,
+                           limit: int = 12, source: str = ""):
+        """Backtest the WHOLE BNB universe and aggregate. Cached 10 min
+        because it is heavy. source: synthetic | cmc | checkpoint/live."""
+        from .backtest import run_universe_backtest
+        from .data import make_source
+        import time
+
+        src_name = source or _default_source()
+        symbols = ctx.scfg.symbols[:max(1, min(int(limit), len(ctx.scfg.symbols)))]
+        bars = max(300, min(int(bars), 1200))
+        key = (src_name, timeframe, bars, len(symbols), ctx.scfg.risk_mode.value)
+        now = time.time()
+        hit = _UNIVERSE_CACHE.get(key)
+        if hit and now - hit[0] < 600:
+            return {**hit[1], "cached": True}
+        src = make_source(src_name, ctx.rcfg)
+        res = run_universe_backtest(ctx.scfg, src, symbols, Timeframe(timeframe),
+                                    bars=bars, deposit_usd=ctx.rcfg.deposit_usd, eval_every=2)
+        res["source"] = src_name
+        res["universe_size"] = len(ctx.scfg.symbols)
+        _UNIVERSE_CACHE[key] = (now, res)
+        return {**res, "cached": False}
 
     @app.get("/strategies")
     def strategies():

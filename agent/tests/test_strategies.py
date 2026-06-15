@@ -165,3 +165,34 @@ def test_minute_builder_real_volume():
     # candle volume reflects real traded volume, not the tick count (which
     # would be ~2). 24h-vol delta per minute ≈ 100.
     assert out[1].volume == pytest.approx(100.0, abs=1.0)
+
+
+def test_runtime_config_complete():
+    """Regression guard: RuntimeConfig must keep every field the API/live loop
+    reference (a truncated config once dropped use_testnet/wallet_address and
+    crashed the /health endpoint in production)."""
+    from binacci.config import RuntimeConfig
+
+    rc = RuntimeConfig()
+    required = [
+        "cmc_api_key", "cmc_base_url", "venue", "deposit_usd", "poll_seconds",
+        "macro_refresh_seconds", "fear_greed_refresh_seconds", "poll_only_verified",
+        "warmup_backfill", "warmup_backfill_bars", "verify_liquidity",
+        "max_price_impact_pct", "twak_endpoint", "bsc_rpc", "bsc_testnet_rpc",
+        "wallet_address", "use_testnet", "api_host", "api_port",
+    ]
+    for f in required:
+        assert hasattr(rc, f), f"RuntimeConfig missing {f}"
+
+
+def test_universe_backtest_runs():
+    from binacci.backtest import run_universe_backtest
+    from binacci.config import StrategyConfig, Timeframe
+    from binacci.data import SyntheticSource
+
+    res = run_universe_backtest(StrategyConfig(), SyntheticSource(),
+                                ["BNB", "CAKE", "ETH"], Timeframe.M15,
+                                bars=400, eval_every=2)
+    assert res["markets_tested"] == 3
+    assert res["winners"] + res["losers"] == 3
+    assert "per_symbol" in res and len(res["per_symbol"]) == 3
