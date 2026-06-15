@@ -43,7 +43,7 @@ export default function Settings() {
     try {
       const res = await fetch(`/agent/risk/mode?mode=${m}`, { method: "POST" });
       const j = await res.json();
-      if (j.ok) { setMode(m); setMsg(`Switched to ${m} — ${j.risk.max_positions} slots`); }
+      if (j.ok) { setMode(m); setMsg(`Switched to ${m} — ${j.risk.max_positions} slots · ${fmt(j.perps_leverage)}× perps`); }
       else setMsg(j.error || "switch failed");
     } catch { setMsg("agent offline — cannot switch"); }
     setBusy(false);

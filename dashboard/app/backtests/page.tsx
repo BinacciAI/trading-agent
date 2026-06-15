@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fmt } from "../useAgent";
 
 type BT = {
@@ -114,6 +114,8 @@ export default function Backtests() {
   const [uni, setUni] = useState<Uni | null>(null);
   const [full, setFull] = useState<FullBT | null>(null);
   const [tb, setTb] = useState<TBRow[]>([]);
+  const [prog, setProg] = useState<{ done: number; total: number; elapsed: number } | null>(null);
+  const pollId = useRef(0);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -135,16 +137,31 @@ export default function Backtests() {
     setBusy(false);
   };
   const runFull = async () => {
-    setBusy(true); setErr("");
-    try {
-      const url = `/agent/full-backtest?timeframes=${tfPreset}&bars=${bars}`
-        + `&limit=${mlimit === "146" ? 0 : mlimit}&source=${source}&risk_mode=${riskMode}`;
-      const r = await fetch(url);
-      const j = await r.json();
-      setFull(j);
-      if (j?.time_basis) setTb(j.time_basis);
-    } catch { setErr("agent offline"); }
-    setBusy(false);
+    const myId = ++pollId.current;       // cancels any in-flight poll
+    setBusy(true); setErr(""); setFull(null); setProg({ done: 0, total: 0, elapsed: 0 });
+    const url = `/agent/full-backtest?timeframes=${tfPreset}&bars=${bars}`
+      + `&limit=${mlimit === "146" ? 0 : mlimit}&source=${source}&risk_mode=${riskMode}`;
+    const MAX_POLLS = 600;               // ~20 min ceiling at 2s
+    for (let i = 0; i < MAX_POLLS; i++) {
+      if (pollId.current !== myId) return;   // a newer run superseded this one
+      let j: FullBT & { status?: string; progress?: number; total?: number; elapsed_s?: number; error?: string };
+      try {
+        const r = await fetch(url);
+        j = await r.json();
+      } catch { setErr("agent offline"); setBusy(false); setProg(null); return; }
+      if (j.status === "running") {
+        setProg({ done: j.progress ?? 0, total: j.total ?? 0, elapsed: j.elapsed_s ?? 0 });
+        await new Promise((res) => setTimeout(res, 2000));
+        continue;
+      }
+      if (j.status === "error") { setErr(j.error || "backtest failed"); setBusy(false); setProg(null); return; }
+      // done (status "done", or a legacy direct result with a config)
+      if (j.config) { setFull(j); if (j.time_basis) setTb(j.time_basis); }
+      else setErr("unexpected response");
+      setBusy(false); setProg(null);
+      return;
+    }
+    setErr("timed out — try fewer markets or a higher eval cadence"); setBusy(false); setProg(null);
   };
   const loadTimebasis = async () => {
     try {
@@ -263,6 +280,22 @@ export default function Backtests() {
         <>
           <h2 className="section">Time Basis — What a Candle Count Means in Real Time</h2>
           <TimeBasisChart rows={tb} bars={parseInt(bars, 10) || 1500} />
+
+          {prog && (
+            <div className="chart-box" style={{ padding: "14px 16px", marginTop: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-secondary)", marginBottom: 8 }}>
+                <span>Running backtest across the universe…{prog.total ? ` ${prog.done}/${prog.total} runs` : ""}</span>
+                <span className="dim">{prog.elapsed ? `${fmt(prog.elapsed)}s` : ""}</span>
+              </div>
+              <div style={{ height: 8, background: "var(--bg-card)", borderRadius: 4, overflow: "hidden", border: "1px solid var(--border-soft)" }}>
+                <div style={{ width: `${prog.total ? Math.min((prog.done / prog.total) * 100, 100) : 6}%`, height: "100%", background: "var(--brand-gold)", transition: "width .4s" }} />
+              </div>
+              <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
+                Runs in the background — you can leave this open. All 146 markets across several timeframes is heavy
+                (minutes); results are cached for 15 min once complete.
+              </p>
+            </div>
+          )}
 
           {full && full.config && (
             <>

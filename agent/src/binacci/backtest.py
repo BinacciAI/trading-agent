@@ -79,6 +79,7 @@ def run_backtest(
     warmup: int = 200,
     macro_series: Optional[list[MacroSnapshot]] = None,
     eval_every: int = 1,
+    ref_every: int = 1,
 ) -> BacktestResult:
     candles = source.history(symbol, tf, bars)
     if len(candles) <= warmup + 10:
@@ -116,8 +117,12 @@ def run_backtest(
         df = to_dataframe(window)
         macro_idx["i"] = i
 
-        # background sims refresh references each bar
-        orch.update_references(symbol, tf, df)
+        # background sims refresh references. ref_every=1 (default) keeps the
+        # exact per-bar model; the heavy universe sweep raises it to refresh at
+        # the evaluation cadence (references are only ever read by evaluate, so
+        # a matched cadence is a sound, much cheaper approximation).
+        if i % ref_every == 0:
+            orch.update_references(symbol, tf, df)
 
         # entry evaluation (gates 1-4 + park level)
         if i % eval_every == 0:
@@ -279,6 +284,7 @@ def run_full_backtest(
     bars: int = 1500,
     deposit_usd: float = 1000.0,
     eval_every: int = 1,
+    ref_every: Optional[int] = None,
     risk_mode: Optional[str] = None,
     progress: Optional[callable] = None,
 ) -> dict:
@@ -301,6 +307,9 @@ def run_full_backtest(
     run_cfg = cfg.model_copy(deep=True)
     if risk_mode:
         run_cfg.apply_risk_mode(risk_mode)
+    # references are only read by evaluate, so for the heavy sweep refresh them
+    # at the eval cadence (huge speedup); callers can override.
+    ref_every = eval_every if ref_every is None else max(1, int(ref_every))
 
     syms = list(symbols) if symbols is not None else list(run_cfg.symbols)
     tfs = list(timeframes) if timeframes is not None else list(run_cfg.entry_timeframes)
@@ -320,11 +329,12 @@ def run_full_backtest(
     for tf in tfs:
         for s in syms:
             done += 1
-            if progress and done % 50 == 0:
+            if progress and (done % 10 == 0 or done == total_runs):
                 progress(done, total_runs)
             try:
                 r = run_backtest(run_cfg, source, s, tf, bars=bars,
-                                 deposit_usd=deposit_usd, eval_every=eval_every)
+                                 deposit_usd=deposit_usd, eval_every=eval_every,
+                                 ref_every=ref_every)
             except Exception as exc:  # insufficient data / source gap
                 skipped.append({"symbol": s, "tf": tf.value, "why": str(exc)[:80]})
                 continue
