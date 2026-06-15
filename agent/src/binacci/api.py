@@ -263,9 +263,10 @@ def build_app():
 
     @app.get("/manifests")
     def manifests():
+        from .regime import regime_skill_manifest
         from .skill import all_skill_manifests
 
-        return all_skill_manifests()
+        return all_skill_manifests() + [regime_skill_manifest()]
 
     @app.get("/signals")
     def signals():
@@ -349,6 +350,27 @@ def build_app():
             },
             "wallet": ctx.rcfg.wallet_address or None,
         }
+
+    @app.get("/regime")
+    def regime():
+        """Macro Regime Classifier (CMC-data skill) — live classification."""
+        from .regime import classify_regime, regime_skill_manifest
+
+        macro = ctx.loop.macro
+        fg = ctx.loop.fear_greed_value
+        out = classify_regime(macro, fg)
+        out["skill"] = regime_skill_manifest()["name"]
+        return out
+
+    @app.post("/chain/register")
+    def chain_register():
+        """Mint the agent's ERC-8004 on-chain identity (idempotent)."""
+        from .chain import register_now
+
+        try:
+            return register_now()
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:300]}
 
     return app
 

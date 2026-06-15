@@ -196,3 +196,19 @@ def test_universe_backtest_runs():
     assert res["markets_tested"] == 3
     assert res["winners"] + res["losers"] == 3
     assert "per_symbol" in res and len(res["per_symbol"]) == 3
+
+
+def test_macro_regime_classifier():
+    from binacci.macro import MacroSnapshot
+    from binacci.regime import classify_regime, regime_skill_manifest
+
+    risk_on = MacroSnapshot(3e12, 55.0, 4.0, total_cap_change_pct=2.5,
+                            btc_dominance_change_pct=-0.3, usdt_dominance_change_pct=-0.4,
+                            fear_greed=72)
+    risk_off = MacroSnapshot(3e12, 58.0, 6.0, total_cap_change_pct=-3.0,
+                             btc_dominance_change_pct=1.2, usdt_dominance_change_pct=0.8,
+                             fear_greed=20)
+    assert classify_regime(risk_on)["regime"] == "risk_on"
+    assert classify_regime(risk_off)["regime"] == "risk_off"
+    assert classify_regime(None)["regime"] == "unknown"
+    assert regime_skill_manifest()["name"] == "binacci-macro-regime-classifier"

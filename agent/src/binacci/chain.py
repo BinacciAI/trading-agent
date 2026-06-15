@@ -39,10 +39,16 @@ def register_agent_identity(
         log.error("bnbagent not installed — pip install 'bnbagent[server,ipfs]'")
         return None
 
-    wallet = EVMWalletProvider(
-        password=os.environ["WALLET_PASSWORD"],
-        private_key=os.environ.get("PRIVATE_KEY"),  # first run only
-    )
+    password = (os.environ.get("WALLET_PASSWORD")
+                or os.environ.get("BINACCI_WALLET_PASSWORD")
+                or os.environ.get("TWAK_WALLET_PASSWORD"))
+    private_key = (os.environ.get("PRIVATE_KEY")
+                   or os.environ.get("BINACCI_AGENT_PRIVATE_KEY"))
+    if not password:
+        log.error("ERC-8004 register: no wallet password "
+                  "(set BINACCI_WALLET_PASSWORD or reuse TWAK_WALLET_PASSWORD)")
+        return None
+    wallet = EVMWalletProvider(password=password, private_key=private_key)
     sdk = ERC8004Agent(network=network, wallet_provider=wallet)
     endpoints = []
     if a2a_card_url:
@@ -91,9 +97,13 @@ def maybe_auto_register() -> Optional[dict]:
     if marker.exists():
         log.info("ERC-8004 already registered: %s", marker.read_text())
         return json.loads(marker.read_text())
-    if not (os.environ.get("WALLET_PASSWORD") and
-            (os.environ.get("PRIVATE_KEY") or marker.parent.joinpath(".keystore").exists())):
-        log.warning("auto-register skipped: WALLET_PASSWORD/PRIVATE_KEY not set")
+    has_pw = bool(os.environ.get("WALLET_PASSWORD") or os.environ.get("BINACCI_WALLET_PASSWORD")
+                  or os.environ.get("TWAK_WALLET_PASSWORD"))
+    has_key = bool(os.environ.get("PRIVATE_KEY") or os.environ.get("BINACCI_AGENT_PRIVATE_KEY")
+                   or marker.parent.joinpath(".keystore").exists())
+    if not (has_pw and has_key):
+        log.warning("auto-register skipped: need a wallet password + an agent PRIVATE_KEY "
+                    "(BINACCI_AGENT_PRIVATE_KEY). Gas-free on bsc-testnet via MegaFuel.")
         return None
     network = "bsc-testnet" if os.environ.get("BINACCI_USE_TESTNET", "true").lower() in ("1", "true", "yes") else "bsc"
     result = register_agent_identity(network=network,
@@ -104,6 +114,36 @@ def maybe_auto_register() -> Optional[dict]:
                                       "tx": result.get("transactionHash"),
                                       "network": network}))
     return result
+
+
+def register_now() -> dict:
+    """On-demand ERC-8004 registration (POST /chain/register). Idempotent —
+    returns the existing identity if already minted."""
+    import json
+    from pathlib import Path
+
+    marker = Path(os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data")) / "erc8004.json"
+    if marker.exists():
+        try:
+            return {"ok": True, "already": True, **json.loads(marker.read_text())}
+        except Exception:
+            pass
+    network = "bsc-testnet" if os.environ.get("BINACCI_USE_TESTNET", "true").lower() in ("1", "true", "yes") else "bsc"
+    res = register_agent_identity(network=network,
+                                  a2a_card_url=os.environ.get("BINACCI_AGENT_CARD_URL", ""))
+    if not res:
+        return {"ok": False,
+                "error": "registration failed — ensure bnbagent is installed and "
+                         "BINACCI_AGENT_PRIVATE_KEY + a wallet password are set",
+                "network": network}
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"agentId": res.get("agentId"),
+                                      "tx": res.get("transactionHash"), "network": network}))
+    except Exception:
+        log.exception("could not persist erc8004 marker")
+    return {"ok": True, "agentId": res.get("agentId"),
+            "tx": res.get("transactionHash"), "network": network}
 
 
 def create_agent_app():
