@@ -106,15 +106,16 @@ def run_backtest(
     orch.cold_start(symbol, tf, warm_df)
 
     equity: list[float] = []
-    window: list[Candle] = list(candles[:warmup])
     max_window = max(400, warmup)
+    # Precompute the full OHLCV frame ONCE. Each bar's window is a cheap iloc
+    # view over it — identical rows to rebuilding from candle objects, but
+    # without the per-bar DataFrame construction that otherwise dominates.
+    full_df = to_dataframe(candles)
 
     for i in range(warmup, len(candles)):
         c = candles[i]
-        window.append(c)
-        if len(window) > max_window:
-            window.pop(0)
-        df = to_dataframe(window)
+        lo = max(0, i + 1 - max_window)
+        df = full_df.iloc[lo : i + 1]
         macro_idx["i"] = i
 
         # background sims refresh references. ref_every=1 (default) keeps the
@@ -276,6 +277,35 @@ def _finalize(bucket: dict) -> dict:
     return dict(sorted(out.items(), key=lambda kv: kv[1]["total_pnl_usd"], reverse=True))
 
 
+def _run_one(task):
+    """Top-level (picklable) worker: run one (symbol, timeframe) backtest.
+
+    Returns (symbol, tf, result_or_None, error_or_None) so failures are data,
+    not exceptions — the sweep skips them exactly like the serial path did.
+    """
+    run_cfg, source, s, tf, bars, deposit_usd, eval_every, ref_every = task
+    try:
+        r = run_backtest(run_cfg, source, s, tf, bars=bars,
+                         deposit_usd=deposit_usd, eval_every=eval_every,
+                         ref_every=ref_every)
+        return (s, tf, r, None)
+    except Exception as exc:  # insufficient data / source gap
+        return (s, tf, None, str(exc)[:80])
+
+
+def _resolve_workers(workers: Optional[int], n_tasks: int) -> int:
+    """Default to serial (1) — identical to the original behaviour — unless the
+    caller or BINACCI_BACKTEST_WORKERS opts in. Capped at task count and cores."""
+    import os
+    if workers is None:
+        env = os.environ.get("BINACCI_BACKTEST_WORKERS", "").strip()
+        workers = int(env) if env.lstrip("-").isdigit() else 1
+    workers = max(1, int(workers))
+    if workers > 1:
+        workers = min(workers, max(1, n_tasks), (os.cpu_count() or 1))
+    return workers
+
+
 def run_full_backtest(
     cfg: StrategyConfig,
     source: CandleSource,
@@ -287,6 +317,7 @@ def run_full_backtest(
     ref_every: Optional[int] = None,
     risk_mode: Optional[str] = None,
     progress: Optional[callable] = None,
+    workers: Optional[int] = None,
 ) -> dict:
     """Backtest the ENTIRE universe across MULTIPLE timeframes and break the
     results down by strategy and by book (spot vs perp), with the time basis
@@ -325,32 +356,52 @@ def run_full_backtest(
     per_symbol: dict = {}  # symbol -> aggregated across timeframes
 
     total_runs = len(syms) * len(tfs)
-    done = 0
-    for tf in tfs:
-        for s in syms:
-            done += 1
-            if progress and (done % 10 == 0 or done == total_runs):
-                progress(done, total_runs)
-            try:
-                r = run_backtest(run_cfg, source, s, tf, bars=bars,
-                                 deposit_usd=deposit_usd, eval_every=eval_every,
-                                 ref_every=ref_every)
-            except Exception as exc:  # insufficient data / source gap
-                skipped.append({"symbol": s, "tf": tf.value, "why": str(exc)[:80]})
-                continue
-            results.append(r)
-            by_tf[tf.value]["markets"] += 1
-            ps = per_symbol.setdefault(s, {"trades": 0, "wins": 0, "pnl_usd": 0.0})
-            for t in r.trade_log:
-                pnl = t["pnl_usd"]
-                _accumulate(by_strategy, t["strategy"], pnl)
-                _accumulate(by_market, t.get("market", "spot"), pnl)
-                by_tf[tf.value]["trades"] += 1
-                by_tf[tf.value]["wins"] += 1 if pnl > 0 else 0
-                by_tf[tf.value]["pnl_usd"] += pnl
-                ps["trades"] += 1
-                ps["wins"] += 1 if pnl > 0 else 0
-                ps["pnl_usd"] += pnl
+    tasks = [(run_cfg, source, s, tf, bars, deposit_usd, eval_every, ref_every)
+             for tf in tfs for s in syms]
+
+    # Optional process-level parallelism for the heavy universe sweep. Runs are
+    # fully independent, and aggregation below is order-independent (it iterates
+    # `out` in task order), so the report is byte-identical regardless of worker
+    # count. Any failure — unpicklable source, restricted/single-core env —
+    # transparently falls back to the serial path.
+    n_workers = _resolve_workers(workers, len(tasks))
+    out: list = []
+    if n_workers > 1 and len(tasks) > 1:
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+            with ProcessPoolExecutor(max_workers=n_workers) as ex:
+                for k, triple in enumerate(ex.map(_run_one, tasks), start=1):
+                    out.append(triple)
+                    if progress and (k % 10 == 0 or k == total_runs):
+                        progress(k, total_runs)
+        except Exception:
+            out = []  # serial fallback below
+    if not out:
+        for k, task in enumerate(tasks, start=1):
+            out.append(_run_one(task))
+            if progress and (k % 10 == 0 or k == total_runs):
+                progress(k, total_runs)
+
+    # Deterministic aggregation — identical to the original inline loop, but fed
+    # from `out` (so it doesn't matter whether runs executed serially or across
+    # processes).
+    for (s, tf, r, err) in out:
+        if r is None:
+            skipped.append({"symbol": s, "tf": tf.value, "why": err or "no result"})
+            continue
+        results.append(r)
+        by_tf[tf.value]["markets"] += 1
+        ps = per_symbol.setdefault(s, {"trades": 0, "wins": 0, "pnl_usd": 0.0})
+        for t in r.trade_log:
+            pnl = t["pnl_usd"]
+            _accumulate(by_strategy, t["strategy"], pnl)
+            _accumulate(by_market, t.get("market", "spot"), pnl)
+            by_tf[tf.value]["trades"] += 1
+            by_tf[tf.value]["wins"] += 1 if pnl > 0 else 0
+            by_tf[tf.value]["pnl_usd"] += pnl
+            ps["trades"] += 1
+            ps["wins"] += 1 if pnl > 0 else 0
+            ps["pnl_usd"] += pnl
 
     trades = sum(r.trades for r in results)
     wins = sum(r.wins for r in results)
