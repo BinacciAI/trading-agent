@@ -11,6 +11,12 @@ type Status = {
     universe?: { candidates: number; verified_count: number | null };
   };
 };
+type Chain = {
+  sdk: string; installed: boolean; network: string;
+  erc8004: { registered: boolean; agent_id: string | null; tx: string | null; auto_register: boolean };
+  apex: { standard: string; mounted: boolean; job_endpoint: string; deliverable: string };
+  wallet: string | null;
+};
 
 const SIMS = [
   { name: "Cold Start", code: "SIM 01", role: "Replays history on boot so every market has a fresh reference point before any entry is considered.", cadence: "Once · at startup" },
@@ -22,12 +28,13 @@ const SIMS = [
 
 export default function Agents() {
   const [status, live] = useAgent<Status | null>("/status", null);
+  const [chain] = useAgent<Chain | null>("/chain", null, 15000);
   const loop = status?.loop;
   const running = live && !!loop?.running && !status?.kill_switch_fired;
 
   return (
     <main className="main">
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+      <div className="toolbar">
         <span className={running ? "badge green" : "badge gray"}>{running ? "ALL SYSTEMS ACTIVE" : "STANDBY"}</span>
         <span className="badge cyan">{loop?.markets ?? loop?.universe?.candidates ?? "—"} MARKETS</span>
         <span className="badge gold">{loop?.warmup?.tradable_tfs?.length ?? 0} TIMEFRAMES WARM</span>
@@ -59,6 +66,45 @@ export default function Agents() {
         </div>
       </div>
 
+      <h2 className="section">BNB Chain Layer — Identity &amp; Commerce (BNB AI Agent SDK)</h2>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))" }}>
+        <div className="card">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <div className="lbl">SDK</div>
+            <span className={chain?.installed ? "badge green" : "badge gray"}>{chain?.installed ? "INSTALLED" : "—"}</span>
+          </div>
+          <div className="val" style={{ fontSize: 16 }}>bnbagent</div>
+          <p style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 8 }}>Network: <b style={{ color: "var(--text-primary)" }}>{chain?.network ?? "—"}</b></p>
+        </div>
+        <div className="card">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <div className="lbl">ERC-8004 Identity</div>
+            <span className={chain?.erc8004?.registered ? "badge green" : "badge gold"}>{chain?.erc8004?.registered ? "REGISTERED" : "PENDING"}</span>
+          </div>
+          <div className="val cyan" style={{ fontSize: 16 }}>{chain?.erc8004?.agent_id ?? "agent #—"}</div>
+          <p style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 8 }}>
+            On-chain agent identity. Auto-register: {chain?.erc8004?.auto_register ? "on" : "off"}.
+          </p>
+        </div>
+        <div className="card" style={{ borderColor: "var(--border-cyan)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <div className="lbl">APEX Commerce</div>
+            <span className={chain?.apex?.mounted ? "badge green" : "badge gray"}>{chain?.apex?.mounted ? "MOUNTED" : "—"}</span>
+          </div>
+          <div className="val" style={{ fontSize: 16 }}>{chain?.apex?.standard ?? "ERC-8183"}</div>
+          <p style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 8 }}>
+            Agents pay (escrowed) for strategy specs at <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{chain?.apex?.job_endpoint ?? "/apex/job/execute"}</code>.
+          </p>
+        </div>
+        <div className="card">
+          <div className="lbl">Wallet</div>
+          <div className="val" style={{ fontSize: 13, fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>
+            {chain?.wallet ? `${chain.wallet.slice(0, 10)}…${chain.wallet.slice(-6)}` : "self-custody (TWAK)"}
+          </div>
+          <p style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 8 }}>Keys sign locally — the agent never holds them.</p>
+        </div>
+      </div>
+
       <h2 className="section">Warmup — 1m Bars Collected Per Market</h2>
       <div className="tbl-wrap">
         <table>
@@ -66,7 +112,7 @@ export default function Agents() {
           <tbody>
             {!loop?.warmup?.one_minute_bars && <tr><td colSpan={3}>connecting…</td></tr>}
             {Object.entries(loop?.warmup?.one_minute_bars ?? {})
-              .sort((a, b) => b[1] - a[1]).slice(0, 30).map(([sym, bars]) => (
+              .sort((a, b) => b[1] - a[1]).map(([sym, bars]) => (
               <tr key={sym}>
                 <td style={{ color: "var(--text-primary)", fontWeight: 600 }}>{sym}</td>
                 <td className="num">{bars}</td>

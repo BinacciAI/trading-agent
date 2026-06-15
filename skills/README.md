@@ -16,6 +16,8 @@ the agent would have done.
 | [Mean Reversion (oversold reclaim)](binacci-mean-reversion-strategy/SKILL.md) | `mean_reversion` | no | Capitulation overshoots; the snap back to the mean is tradable. |
 | [Trend Follow (EMA-stack pullback)](binacci-trend-follow-strategy/SKILL.md) | `trend_follow` | yes | The trend is the edge; buy the pullback, not the breakout. |
 | [Volatility Squeeze](binacci-volatility-squeeze-strategy/SKILL.md) | `volatility_squeeze` | yes | Low volatility is potential energy; expansion releases it. |
+| [VWAP Reversion](binacci-vwap-reversion-strategy/SKILL.md) | `vwap_reversion` | no | Price rubber-bands back to where volume actually traded. |
+| [Liquidity Sweep Reclaim](binacci-liquidity-sweep-strategy/SKILL.md) | `liquidity_sweep` | no | Stop-runs trap late sellers; the reclaim is the reversal. |
 
 Plus a **portfolio** spec that runs every strategy together:
 

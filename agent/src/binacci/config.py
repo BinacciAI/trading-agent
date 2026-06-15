@@ -237,6 +237,8 @@ class StrategyToggles(BaseModel):
     mean_reversion: bool = True      # RSI/Bollinger oversold reclaim
     trend_follow: bool = True        # EMA-stack pullback
     volatility_squeeze: bool = True  # Bollinger squeeze release
+    vwap_reversion: bool = True      # fade stretch from rolling VWAP
+    liquidity_sweep: bool = True     # stop-run wick + reclaim
 
 
 class BreakoutConfig(BaseModel):

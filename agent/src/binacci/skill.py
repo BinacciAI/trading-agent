@@ -69,6 +69,20 @@ STRATEGY_META: dict[str, dict] = {
         "gates": ["bandwidth_squeeze", "upper_band_break", "macro_ok", "retest_touch"],
         "requires_macro": True,
     },
+    "vwap_reversion": {
+        "title": "VWAP Reversion",
+        "philosophy": "Price rubber-bands back to where volume actually traded.",
+        "entry_logic": "Price stretched well below rolling VWAP and turning back up (RSI not chased); limit parked to buy the snap to the mean. Counter-trend — no macro light required.",
+        "gates": ["below_vwap_stretch", "turning_up", "rsi_ok", "level_touch"],
+        "requires_macro": False,
+    },
+    "liquidity_sweep": {
+        "title": "Liquidity Sweep Reclaim",
+        "philosophy": "Stop-runs trap late sellers; the reclaim is the reversal.",
+        "entry_logic": "Price wicks below a recent swing low (sweeping resting liquidity) then closes back above it; limit parked at the reclaimed level. Counter-trend.",
+        "gates": ["swing_low_swept", "reclaim", "level_touch"],
+        "requires_macro": False,
+    },
 }
 
 
@@ -135,7 +149,10 @@ def _strategy_params(strategy: str, cfg: StrategyConfig) -> dict:
         "mean_reversion": lambda: cfg.mean_reversion.model_dump(),
         "trend_follow": lambda: cfg.trend.model_dump(),
         "volatility_squeeze": lambda: cfg.squeeze.model_dump(),
-    }[strategy]()
+        "vwap_reversion": lambda: {"window": 30, "stretch_pct": 0.8,
+                                    "rsi_period": cfg.filters.rsi_period},
+        "liquidity_sweep": lambda: {"lookback_bars": cfg.sims.extrema_window * 2 + 4},
+    }.get(strategy, lambda: {})()
 
 
 def strategy_rules(cfg: StrategyConfig, strategy: str = "reaction") -> dict:

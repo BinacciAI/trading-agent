@@ -328,12 +328,97 @@ class VolatilitySqueezeStrategy(Strategy):
 # --------------------------------------------------------------------------
 
 #: name -> (class, toggle attribute on StrategyToggles)
+class VwapReversionStrategy(Strategy):
+    """Fade a stretch away from rolling VWAP. When price is pulled well below
+    the volume-weighted average and starts turning back up, buy the snap to
+    the mean. Counter-trend — no macro light required."""
+
+    name = "vwap_reversion"
+    requires_reference = False
+
+    def __init__(self, cfg: StrategyConfig):
+        super().__init__(cfg)
+        self.requires_macro = False
+        self.window = 30
+        self.stretch_pct = 0.8
+        self.min_bars = self.window + 6
+
+    def propose(self, symbol, tf, df, side=Side.LONG):
+        if side is not Side.LONG:
+            return None
+        seg = df.tail(self.window)
+        tp = (seg["high"] + seg["low"] + seg["close"]) / 3.0
+        vol = seg["volume"].clip(lower=0.0)
+        denom = float(vol.sum())
+        if denom <= 0:
+            return None
+        vwap = float((tp * vol).sum() / denom)
+        price = float(df["close"].iloc[-1])
+        dev = (price - vwap) / vwap * 100.0
+        if dev > -self.stretch_pct:                       # not stretched below VWAP
+            return None
+        if float(df["close"].iloc[-1]) <= float(df["close"].iloc[-2]):  # not turning up
+            return None
+        r = float(rsi(df["close"], self.cfg.filters.rsi_period).iloc[-1])
+        if r > self.cfg.filters.rsi_overbought:
+            return None
+        level = price
+        if not self._long_limit_ok(df, level, max_below_pct=2.0):
+            return None
+        return StrategyProposal(
+            strategy=self.name, side=side, level_price=level,
+            level_kind="vwap_reversion", strength=min(1.0, abs(dev) / 3.0),
+            reasons=[f"{dev:.2f}% below VWAP", f"rsi={r:.0f}", "turning up"],
+            target_pct=self.cfg.target_for(tf), requires_macro=False,
+            meta={"vwap": vwap, "deviation_pct": dev},
+        )
+
+
+class LiquiditySweepStrategy(Strategy):
+    """Stop-run reclaim. Price wicks below a recent swing low (sweeping the
+    liquidity resting there) and then closes back above it — a classic trap
+    reversal. Park a limit at the reclaimed level. Counter-trend."""
+
+    name = "liquidity_sweep"
+    requires_reference = False
+
+    def __init__(self, cfg: StrategyConfig):
+        super().__init__(cfg)
+        self.requires_macro = False
+        self.lookback = cfg.sims.extrema_window * 2 + 4
+        self.min_bars = self.lookback + 4
+
+    def propose(self, symbol, tf, df, side=Side.LONG):
+        if side is not Side.LONG:
+            return None
+        window = df.iloc[-(self.lookback + 2):-2]
+        if len(window) < 5:
+            return None
+        swing_low = float(window["low"].min())
+        prev_low = float(df["low"].iloc[-2])
+        price = float(df["close"].iloc[-1])
+        if not (prev_low < swing_low and price > swing_low):   # swept + reclaimed
+            return None
+        level = swing_low
+        if not self._long_limit_ok(df, level, max_below_pct=2.5):
+            return None
+        return StrategyProposal(
+            strategy=self.name, side=side, level_price=level,
+            level_kind="sweep_reclaim", strength=0.8,
+            reasons=[f"swept {swing_low:.6g}", "reclaimed"],
+            target_pct=self.cfg.target_for(tf), requires_macro=False,
+            meta={"swing_low": swing_low},
+        )
+
+
 _STRATEGY_TABLE: list[tuple[str, type[Strategy], str]] = [
     ("reaction", ReactionStrategy, "reaction"),
     ("momentum_breakout", MomentumBreakoutStrategy, "momentum_breakout"),
     ("mean_reversion", MeanReversionStrategy, "mean_reversion"),
     ("trend_follow", TrendFollowStrategy, "trend_follow"),
     ("volatility_squeeze", VolatilitySqueezeStrategy, "volatility_squeeze"),
+    ("vwap_reversion", VwapReversionStrategy, "vwap_reversion"),
+    ("liquidity_sweep", LiquiditySweepStrategy, "liquidity_sweep"),
 ]
 
 ALL_STRATEGY_NAMES = [name for name, _, _ in _STRATEGY_TABLE]
