@@ -56,6 +56,8 @@ def get_context() -> AgentContext:
 _UNIVERSE_CACHE: dict = {}
 #: cache for the full-universe (all-146 × multi-TF) backtest: key -> (ts, result)
 _FULL_CACHE: dict = {}
+#: in-flight full-backtest jobs: key -> {status, progress, total, result, error, started}
+_FULL_JOBS: dict = {}
 
 
 def _default_source() -> str:
@@ -202,7 +204,10 @@ def build_app():
             return {"ok": False, "error": f"unknown mode {mode!r}",
                     "modes": [m.value for m in RiskMode]}
         ctx.scfg.apply_risk_mode(rm)  # ctx.engine.cfg is the same object
-        return {"ok": True, "risk": ctx.scfg.risk_summary()}
+        ctx.scfg.export_runtime_env()  # propagate leverage to venue/brain/monitors
+        return {"ok": True, "mode": rm.value, "risk": ctx.scfg.risk_summary(),
+                "perps_leverage": ctx.scfg.perps_leverage,
+                "perps_target_mult": ctx.scfg.perps_target_mult}
 
     @app.get("/backtest")
     def backtest(symbol: str = "BNB", timeframe: str = "15m",
@@ -269,42 +274,84 @@ def build_app():
     @app.get("/full-backtest")
     def full_backtest(timeframes: str = "15m,4h,1d", bars: int = 800,
                       limit: int = 0, source: str = "", risk_mode: str = "",
-                      eval_every: int = 2):
+                      eval_every: int = 3):
         """ALL-universe (up to 146 markets) × MULTI-timeframe backtest with
         per-strategy, per-market (spot/perp) and per-timeframe breakdowns plus
-        the wall-clock time basis of the run. Heavy — cached 15 min. Pass
-        ``limit`` (>0) to cap markets for a faster pass, ``risk_mode`` to test a
-        specific leverage tier. source: synthetic | cmc | checkpoint/live."""
+        the wall-clock time basis of the run.
+
+        Runs as a BACKGROUND JOB so a 146×multi-TF sweep never blocks the event
+        loop or times out the request: the first call starts the job and returns
+        ``{status: "running", progress, total}``; the dashboard polls the same
+        URL until ``status`` is ``"done"`` (result inlined) or ``"error"``.
+        Results are cached 15 min. ``limit`` (>0) caps markets; ``risk_mode``
+        picks the leverage tier. source: synthetic | cmc | checkpoint/live."""
         from .backtest import run_full_backtest
         from .data import make_source
-        import time
+        import time, threading
 
         src_name = source or _default_source()
-        tfs = [Timeframe(t.strip()) for t in timeframes.split(",") if t.strip()]
+        try:
+            tfs = [Timeframe(t.strip()) for t in timeframes.split(",") if t.strip()]
+        except ValueError as exc:
+            return {"status": "error", "error": f"bad timeframe: {exc}"}
+        if not tfs:
+            return {"status": "error", "error": "no timeframes given"}
         bars = max(300, min(int(bars), 1500))
         syms = ctx.scfg.symbols if limit <= 0 else ctx.scfg.symbols[:int(limit)]
         rm = risk_mode.lower() or ctx.scfg.risk_mode.value
+        eval_every = max(1, int(eval_every))
         key = (src_name, tuple(t.value for t in tfs), bars, len(syms), rm, eval_every)
         now = time.time()
+
         hit = _FULL_CACHE.get(key)
         if hit and now - hit[0] < 900:
-            return {**hit[1], "cached": True}
-        res = run_full_backtest(ctx.scfg, make_source(src_name, ctx.rcfg),
-                                symbols=syms, timeframes=tfs, bars=bars,
-                                deposit_usd=ctx.rcfg.deposit_usd,
-                                eval_every=max(1, int(eval_every)),
-                                risk_mode=rm)
-        used = src_name
-        if res["portfolio"]["runs_completed"] == 0 and src_name != "synthetic":
-            used = "synthetic"  # real data not accumulated yet -> show synthetic
-            res = run_full_backtest(ctx.scfg, make_source("synthetic", ctx.rcfg),
-                                    symbols=syms, timeframes=tfs, bars=bars,
-                                    deposit_usd=ctx.rcfg.deposit_usd,
-                                    eval_every=max(1, int(eval_every)), risk_mode=rm)
-        res["source"] = used
-        res["requested_source"] = src_name
-        _FULL_CACHE[key] = (now, res)
-        return {**res, "cached": False}
+            return {"status": "done", **hit[1], "cached": True}
+
+        job = _FULL_JOBS.get(key)
+        if job:
+            if job["status"] == "running":
+                return {"status": "running", "progress": job["progress"],
+                        "total": job["total"], "elapsed_s": round(now - job["started"], 1)}
+            if job["status"] == "error":
+                _FULL_JOBS.pop(key, None)
+                return {"status": "error", "error": job["error"]}
+            if job["status"] == "done":  # hand result over to the cache
+                _FULL_CACHE[key] = (now, job["result"])
+                _FULL_JOBS.pop(key, None)
+                return {"status": "done", **job["result"], "cached": False}
+
+        state = {"status": "running", "progress": 0, "total": len(syms) * len(tfs),
+                 "result": None, "error": None, "started": now}
+        _FULL_JOBS[key] = state
+
+        def _run():
+            try:
+                def prog(done, total):
+                    state["progress"] = done
+                    state["total"] = total
+                res = run_full_backtest(
+                    ctx.scfg, make_source(src_name, ctx.rcfg), symbols=syms,
+                    timeframes=tfs, bars=bars, deposit_usd=ctx.rcfg.deposit_usd,
+                    eval_every=eval_every, risk_mode=rm, progress=prog)
+                used = src_name
+                if res["portfolio"]["runs_completed"] == 0 and src_name != "synthetic":
+                    used = "synthetic"  # real data not accumulated yet
+                    res = run_full_backtest(
+                        ctx.scfg, make_source("synthetic", ctx.rcfg), symbols=syms,
+                        timeframes=tfs, bars=bars, deposit_usd=ctx.rcfg.deposit_usd,
+                        eval_every=eval_every, risk_mode=rm, progress=prog)
+                res["source"] = used
+                res["requested_source"] = src_name
+                state["result"] = res
+                state["status"] = "done"
+            except Exception as exc:  # surface the reason instead of a dead 500
+                log.exception("full-backtest job failed")
+                state["error"] = str(exc)[:200]
+                state["status"] = "error"
+
+        threading.Thread(target=_run, name="full-backtest", daemon=True).start()
+        return {"status": "running", "progress": 0, "total": state["total"], "elapsed_s": 0.0}
+
 
     @app.get("/timebasis")
     def timebasis(bars: int = 1500, timeframes: str = ""):

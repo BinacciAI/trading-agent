@@ -7,6 +7,7 @@ report computed by this engine, making the spec verifiably backtestable.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
@@ -14,6 +15,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from . import indicators as _ind
 from .config import StrategyConfig, Timeframe
 from .data import CandleSource
 from .execution import ExecutionEngine
@@ -21,6 +23,12 @@ from .indicators import to_dataframe
 from .macro import MacroSnapshot
 from .models import Candle
 from .orchestrator import Orchestrator
+
+
+#: Opt-in: precompute causal indicators once per run and slice per bar
+#: (see indicators.prime_precompute). Default off; proven trade-identical by
+#: tests/test_fastind.py. Monkeypatchable in tests.
+FAST_BACKTEST: bool = os.environ.get("BINACCI_FAST_BACKTEST", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -79,6 +87,7 @@ def run_backtest(
     warmup: int = 200,
     macro_series: Optional[list[MacroSnapshot]] = None,
     eval_every: int = 1,
+    ref_every: int = 1,
 ) -> BacktestResult:
     candles = source.history(symbol, tf, bars)
     if len(candles) <= warmup + 10:
@@ -105,30 +114,46 @@ def run_backtest(
     orch.cold_start(symbol, tf, warm_df)
 
     equity: list[float] = []
-    window: list[Candle] = list(candles[:warmup])
     max_window = max(400, warmup)
+    # Precompute the full OHLCV frame ONCE. Each bar's window is a cheap iloc
+    # view over it — identical rows to rebuilding from candle objects, but
+    # without the per-bar DataFrame construction that otherwise dominates.
+    full_df = to_dataframe(candles)
 
-    for i in range(warmup, len(candles)):
-        c = candles[i]
-        window.append(c)
-        if len(window) > max_window:
-            window.pop(0)
-        df = to_dataframe(window)
-        macro_idx["i"] = i
+    # Opt-in fast path: compute causal indicators once over full_df and slice
+    # per bar. Indicators are causal (value at bar i uses only bars <= i), so
+    # this is lookahead-free; non-causal pivot/divergence detection stays
+    # windowed. Cleared in `finally` so state never leaks across runs.
+    primed = FAST_BACKTEST
+    if primed:
+        _ind.prime_precompute(full_df)
+    try:
+        for i in range(warmup, len(candles)):
+            c = candles[i]
+            lo = max(0, i + 1 - max_window)
+            df = full_df.iloc[lo : i + 1]
+            macro_idx["i"] = i
 
-        # background sims refresh references each bar
-        orch.update_references(symbol, tf, df)
+            # background sims refresh references. ref_every=1 (default) keeps the
+            # exact per-bar model; the heavy universe sweep raises it to refresh
+            # at the evaluation cadence (references are only ever read by
+            # evaluate, so a matched cadence is a sound, much cheaper approx).
+            if i % ref_every == 0:
+                orch.update_references(symbol, tf, df)
 
-        # entry evaluation (gates 1-4 + park level)
-        if i % eval_every == 0:
-            orch.evaluate(symbol, tf, df, ts=c.ts)
+            # entry evaluation (gates 1-4 + park level)
+            if i % eval_every == 0:
+                orch.evaluate(symbol, tf, df, ts=c.ts)
 
-        # candle stream: fills, averaging, trailing, TP, kill switch
-        prices = {symbol: c.close}
-        orch.on_candle(symbol, tf, c, prices)
+            # candle stream: fills, averaging, trailing, TP, kill switch
+            prices = {symbol: c.close}
+            orch.on_candle(symbol, tf, c, prices)
 
-        snap = engine.snapshot(prices)
-        equity.append(snap["equity_usd"])
+            snap = engine.snapshot(prices)
+            equity.append(snap["equity_usd"])
+    finally:
+        if primed:
+            _ind.clear_precompute()
 
     # close any remaining open positions at the last price (mark-to-market)
     last = candles[-1]
@@ -271,6 +296,35 @@ def _finalize(bucket: dict) -> dict:
     return dict(sorted(out.items(), key=lambda kv: kv[1]["total_pnl_usd"], reverse=True))
 
 
+def _run_one(task):
+    """Top-level (picklable) worker: run one (symbol, timeframe) backtest.
+
+    Returns (symbol, tf, result_or_None, error_or_None) so failures are data,
+    not exceptions — the sweep skips them exactly like the serial path did.
+    """
+    run_cfg, source, s, tf, bars, deposit_usd, eval_every, ref_every = task
+    try:
+        r = run_backtest(run_cfg, source, s, tf, bars=bars,
+                         deposit_usd=deposit_usd, eval_every=eval_every,
+                         ref_every=ref_every)
+        return (s, tf, r, None)
+    except Exception as exc:  # insufficient data / source gap
+        return (s, tf, None, str(exc)[:80])
+
+
+def _resolve_workers(workers: Optional[int], n_tasks: int) -> int:
+    """Default to serial (1) — identical to the original behaviour — unless the
+    caller or BINACCI_BACKTEST_WORKERS opts in. Capped at task count and cores."""
+    import os
+    if workers is None:
+        env = os.environ.get("BINACCI_BACKTEST_WORKERS", "").strip()
+        workers = int(env) if env.lstrip("-").isdigit() else 1
+    workers = max(1, int(workers))
+    if workers > 1:
+        workers = min(workers, max(1, n_tasks), (os.cpu_count() or 1))
+    return workers
+
+
 def run_full_backtest(
     cfg: StrategyConfig,
     source: CandleSource,
@@ -279,8 +333,10 @@ def run_full_backtest(
     bars: int = 1500,
     deposit_usd: float = 1000.0,
     eval_every: int = 1,
+    ref_every: Optional[int] = None,
     risk_mode: Optional[str] = None,
     progress: Optional[callable] = None,
+    workers: Optional[int] = None,
 ) -> dict:
     """Backtest the ENTIRE universe across MULTIPLE timeframes and break the
     results down by strategy and by book (spot vs perp), with the time basis
@@ -301,6 +357,9 @@ def run_full_backtest(
     run_cfg = cfg.model_copy(deep=True)
     if risk_mode:
         run_cfg.apply_risk_mode(risk_mode)
+    # references are only read by evaluate, so for the heavy sweep refresh them
+    # at the eval cadence (huge speedup); callers can override.
+    ref_every = eval_every if ref_every is None else max(1, int(ref_every))
 
     syms = list(symbols) if symbols is not None else list(run_cfg.symbols)
     tfs = list(timeframes) if timeframes is not None else list(run_cfg.entry_timeframes)
@@ -316,31 +375,52 @@ def run_full_backtest(
     per_symbol: dict = {}  # symbol -> aggregated across timeframes
 
     total_runs = len(syms) * len(tfs)
-    done = 0
-    for tf in tfs:
-        for s in syms:
-            done += 1
-            if progress and done % 50 == 0:
-                progress(done, total_runs)
-            try:
-                r = run_backtest(run_cfg, source, s, tf, bars=bars,
-                                 deposit_usd=deposit_usd, eval_every=eval_every)
-            except Exception as exc:  # insufficient data / source gap
-                skipped.append({"symbol": s, "tf": tf.value, "why": str(exc)[:80]})
-                continue
-            results.append(r)
-            by_tf[tf.value]["markets"] += 1
-            ps = per_symbol.setdefault(s, {"trades": 0, "wins": 0, "pnl_usd": 0.0})
-            for t in r.trade_log:
-                pnl = t["pnl_usd"]
-                _accumulate(by_strategy, t["strategy"], pnl)
-                _accumulate(by_market, t.get("market", "spot"), pnl)
-                by_tf[tf.value]["trades"] += 1
-                by_tf[tf.value]["wins"] += 1 if pnl > 0 else 0
-                by_tf[tf.value]["pnl_usd"] += pnl
-                ps["trades"] += 1
-                ps["wins"] += 1 if pnl > 0 else 0
-                ps["pnl_usd"] += pnl
+    tasks = [(run_cfg, source, s, tf, bars, deposit_usd, eval_every, ref_every)
+             for tf in tfs for s in syms]
+
+    # Optional process-level parallelism for the heavy universe sweep. Runs are
+    # fully independent, and aggregation below is order-independent (it iterates
+    # `out` in task order), so the report is byte-identical regardless of worker
+    # count. Any failure — unpicklable source, restricted/single-core env —
+    # transparently falls back to the serial path.
+    n_workers = _resolve_workers(workers, len(tasks))
+    out: list = []
+    if n_workers > 1 and len(tasks) > 1:
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+            with ProcessPoolExecutor(max_workers=n_workers) as ex:
+                for k, triple in enumerate(ex.map(_run_one, tasks), start=1):
+                    out.append(triple)
+                    if progress and (k % 10 == 0 or k == total_runs):
+                        progress(k, total_runs)
+        except Exception:
+            out = []  # serial fallback below
+    if not out:
+        for k, task in enumerate(tasks, start=1):
+            out.append(_run_one(task))
+            if progress and (k % 10 == 0 or k == total_runs):
+                progress(k, total_runs)
+
+    # Deterministic aggregation — identical to the original inline loop, but fed
+    # from `out` (so it doesn't matter whether runs executed serially or across
+    # processes).
+    for (s, tf, r, err) in out:
+        if r is None:
+            skipped.append({"symbol": s, "tf": tf.value, "why": err or "no result"})
+            continue
+        results.append(r)
+        by_tf[tf.value]["markets"] += 1
+        ps = per_symbol.setdefault(s, {"trades": 0, "wins": 0, "pnl_usd": 0.0})
+        for t in r.trade_log:
+            pnl = t["pnl_usd"]
+            _accumulate(by_strategy, t["strategy"], pnl)
+            _accumulate(by_market, t.get("market", "spot"), pnl)
+            by_tf[tf.value]["trades"] += 1
+            by_tf[tf.value]["wins"] += 1 if pnl > 0 else 0
+            by_tf[tf.value]["pnl_usd"] += pnl
+            ps["trades"] += 1
+            ps["wins"] += 1 if pnl > 0 else 0
+            ps["pnl_usd"] += pnl
 
     trades = sum(r.trades for r in results)
     wins = sum(r.wins for r in results)

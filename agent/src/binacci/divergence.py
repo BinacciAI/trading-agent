@@ -53,7 +53,10 @@ def find_divergences(
         return []
     lows = seg["low"].to_numpy()
     highs = seg["high"].to_numpy()
-    osc = _rsi(seg["close"], rsi_period).to_numpy()
+    # RSI here is read at pivot positions across the short `seg`, not just the
+    # latest bar, so it must be seeded over `seg` (windowed) — never the
+    # full-series precompute, which would alter early-segment oscillator values.
+    osc = _rsi(seg["close"], rsi_period, _skip_precompute=True).to_numpy()
 
     out: list[Divergence] = []
 

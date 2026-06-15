@@ -426,12 +426,23 @@ class StrategyConfig(BaseSettings):
                 cfg.perps_leverage = max(1.0, float(env_lev))
             except (TypeError, ValueError):
                 pass
-        os.environ["BINACCI_PERPS_LEVERAGE"] = str(cfg.perps_leverage)
         try:
             cfg.perps_target_mult = max(1.0, float(os.environ.get("BINACCI_PERPS_TARGET_MULT", cfg.perps_target_mult)))
         except (TypeError, ValueError):
             pass
+        cfg.export_runtime_env()
         return cfg
+
+    def export_runtime_env(self) -> None:
+        """Push runtime-resolved values back into the environment so the
+        env-reading consumers (perps venue leverage, brain/monitor displays)
+        stay in lock-step with this cfg. MUST be called after any runtime
+        change to ``perps_leverage`` (e.g. a live risk-mode switch) — otherwise
+        the venue keeps signing at the old leverage while the engine stamps the
+        new one, and the dashboard and chain disagree."""
+        import os
+        os.environ["BINACCI_PERPS_LEVERAGE"] = str(self.perps_leverage)
+        os.environ["BINACCI_PERPS_TARGET_MULT"] = str(self.perps_target_mult)
 
     def apply_risk_mode(self, mode: RiskMode | str) -> "StrategyConfig":
         """Apply a named risk preset: scales slot count and per-entry size
