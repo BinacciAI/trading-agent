@@ -27,6 +27,8 @@ from .models import (
     GateResult,
     GateStep,
     Position,
+    RefKind,
+    ReferencePoint,
     Side,
 )
 from .simulations import (
@@ -34,9 +36,8 @@ from .simulations import (
     Sim01ColdStart,
     Sim02ReferenceUpdate,
     Sim03CleanReference,
-    SimAEntryZone,
-    SimBEntryLevel,
 )
+from .strategies import Strategy, build_strategies
 
 
 @dataclass
@@ -55,6 +56,7 @@ class DecisionTrace:
     symbol: str
     timeframe: Timeframe
     ts: datetime
+    strategy: str = "reaction"
     gates: list[GateResult] = field(default_factory=list)
     entered: bool = False
 
@@ -69,6 +71,7 @@ class Orchestrator:
         cfg: StrategyConfig,
         engine: ExecutionEngine,
         macro_provider: Optional[Callable[[], Optional[MacroSnapshot]]] = None,
+        strategies: Optional[list[Strategy]] = None,
     ):
         self.cfg = cfg
         self.engine = engine
@@ -77,11 +80,12 @@ class Orchestrator:
         self.sim01 = Sim01ColdStart(cfg.sims)
         self.sim02 = Sim02ReferenceUpdate(cfg.sims)
         self.sim03 = Sim03CleanReference(cfg.sims, cfg.filters)
-        self.simA = SimAEntryZone(cfg.sims, cfg.filters)
-        self.simB = SimBEntryLevel(cfg.sims)
+        #: The active strategy portfolio. Defaults to every strategy enabled
+        #: in cfg.strategies; the core reaction strategy is always first.
+        self.strategies: list[Strategy] = strategies or build_strategies(cfg)
         self.pending: list[PendingEntry] = []
         self.traces: list[DecisionTrace] = []
-        self.max_traces = 500
+        self.max_traces = 800
         #: Venue execution hooks (set by the live loop). Called AFTER the
         #: deterministic engine has accepted the open/close — the venue
         #: mirrors engine state on-chain; it never decides.
@@ -100,62 +104,85 @@ class Orchestrator:
     # ---------------- evaluation ----------------
 
     def evaluate(self, symbol: str, tf: Timeframe, df: pd.DataFrame, ts: datetime) -> DecisionTrace:
-        """Run gates 01-04; on success, park a pending limit at the SimB
-        level (gate 05 completes on touch via :meth:`on_candle`)."""
-        trace = DecisionTrace(symbol=symbol, timeframe=tf, ts=ts)
+        """Run every active strategy over this (symbol, timeframe). Each is
+        an independent 5-gate evaluation that, on success, parks a pending
+        limit (gate 05 completes on touch via :meth:`on_candle`). Strategies
+        are isolated: one strategy's block never affects another's entry."""
         side = Side.LONG  # spot default; perps venue may evaluate shorts too
 
-        # 01 — fresh reference
+        # Shared reference state (only gates strategies that require it).
         ref = self.book.get(symbol, tf)
         max_age = timedelta(minutes=tf.minutes * (self.cfg.sims.extrema_window * 6))
         fresh = ref is not None and (ts - ref.ts) <= max_age
-        if not trace.add(GateStep.REFERENCE, fresh,
-                         f"ref={ref.kind.value}@{ref.price:.6g}" if ref else "no reference"):
+
+        last_trace: Optional[DecisionTrace] = None
+        for strat in self.strategies:
+            if len(df) < strat.min_bars:
+                continue
+            last_trace = self._evaluate_one(strat, symbol, tf, df, ts, side, ref, fresh)
+        return last_trace or DecisionTrace(symbol=symbol, timeframe=tf, ts=ts)
+
+    def _evaluate_one(self, strat: Strategy, symbol: str, tf: Timeframe,
+                      df: pd.DataFrame, ts: datetime, side: Side,
+                      ref: Optional[ReferencePoint], fresh: bool) -> DecisionTrace:
+        trace = DecisionTrace(symbol=symbol, timeframe=tf, ts=ts, strategy=strat.name)
+
+        # 01 — fresh reference (only strategies that anchor on one)
+        if strat.requires_reference:
+            if not trace.add(GateStep.REFERENCE, fresh,
+                             f"ref={ref.kind.value}@{ref.price:.6g}" if ref else "no reference"):
+                self._record(trace)
+                return trace
+        else:
+            trace.add(GateStep.REFERENCE, True, "reference not required")
+
+        # 02/03 — zone + filters (the strategy's own setup logic)
+        proposal = strat.propose(symbol, tf, df, side)
+        if proposal is None:
+            trace.add(GateStep.ZONE, False, "no setup")
             self._record(trace)
             return trace
+        trace.add(GateStep.ZONE, True, ",".join(proposal.reasons) or "in zone")
+        trace.add(GateStep.FILTERS, True, str(proposal.meta.get("filters", "")) or "confirmed")
 
-        # 02 — entry zone
-        zone = self.simA.assess(df, side)
-        if not trace.add(GateStep.ZONE, zone.in_zone, ",".join(zone.reasons) or "not in zone"):
-            self._record(trace)
-            return trace
+        # 04 — macro (per-strategy: some are explicit counter-trend fades)
+        if proposal.requires_macro:
+            verdict: MacroVerdict = evaluate_macro(self.macro_provider(), self.cfg.macro, side)
+            if not trace.add(GateStep.MACRO, verdict.ok, verdict.detail):
+                self._record(trace)
+                return trace
+        else:
+            trace.add(GateStep.MACRO, True, "macro gate not required for this strategy")
 
-        # 03 — filters
-        if not trace.add(GateStep.FILTERS, zone.filters_ok, str(zone.filter_detail)):
-            self._record(trace)
-            return trace
-
-        # 04 — macro
-        verdict: MacroVerdict = evaluate_macro(self.macro_provider(), self.cfg.macro, side)
-        if not trace.add(GateStep.MACRO, verdict.ok, verdict.detail):
-            self._record(trace)
-            return trace
-
-        # 05 — find the level; entry completes on touch
-        level = self.simB.pick(df, side)
-        if level is None:
-            trace.add(GateStep.LEVEL, False, "no tradable level near price")
-            self._record(trace)
-            return trace
-
-        if not self.engine.can_open(symbol, tf):
+        # 05 — level touch; slot + duplicate check is per-strategy
+        if not self.engine.can_open(symbol, tf, strat.name):
             trace.add(GateStep.LEVEL, False, "slots full or duplicate position")
             self._record(trace)
             return trace
 
+        reference = ref if ref is not None else ReferencePoint(
+            symbol=symbol, timeframe=tf, kind=RefKind.LOCAL_MIN,
+            price=proposal.level_price, ts=ts,
+            meta={"synthetic": True, "strategy": strat.name},
+        )
+        target = proposal.target_pct if proposal.target_pct is not None else self.cfg.target_for(tf)
         sig = EntrySignal(
             symbol=symbol, timeframe=tf, side=side,
-            level_price=level.price, reference=ref, gates=list(trace.gates),
-            ts=ts, target_pct=self.cfg.target_for(tf),
-            meta={"level_kind": level.kind, "level_strength": level.strength},
+            level_price=proposal.level_price, reference=reference,
+            gates=list(trace.gates), ts=ts, target_pct=target,
+            strategy=strat.name,
+            meta={"level_kind": proposal.level_kind,
+                  "level_strength": proposal.strength,
+                  "strategy": strat.name, "reasons": proposal.reasons},
         )
-        # replace any stale pending for same (symbol, tf)
+        # replace any stale pending for same (symbol, tf, strategy)
         self.pending = [p for p in self.pending
-                        if not (p.signal.symbol == symbol and p.signal.timeframe == tf)]
+                        if not (p.signal.symbol == symbol and p.signal.timeframe == tf
+                                and p.signal.strategy == strat.name)]
         ttl = timedelta(minutes=tf.minutes * 8)
         self.pending.append(PendingEntry(signal=sig, created=ts, expires=ts + ttl))
         trace.add(GateStep.LEVEL, True,
-                  f"limit parked @ {level.price:.6g} ({level.kind})")
+                  f"limit parked @ {proposal.level_price:.6g} ({proposal.level_kind})")
         self._record(trace)
         return trace
 

@@ -33,14 +33,24 @@ from .venues import Venue, make_venue
 
 log = logging.getLogger(__name__)
 
-#: TFs the live loop trades — achievable from live 1m accumulation.
-DEFAULT_LIVE_TFS = [Timeframe.M3, Timeframe.M10, Timeframe.M15, Timeframe.M30]
+#: TFs the live loop trades — achievable from live 1m accumulation. Widened
+#: so more strategies can fire sooner (each TF is an independent stream).
+DEFAULT_LIVE_TFS = [Timeframe.M3, Timeframe.M10, Timeframe.M13,
+                    Timeframe.M15, Timeframe.M21, Timeframe.M30]
 MAX_1M_BARS = 2880  # 48h of 1m bars per symbol
 
 
 @dataclass
 class MinuteBuilder:
-    """Aggregates polled quotes into 1-minute candles."""
+    """Aggregates polled quotes into 1-minute candles.
+
+    Candle *volume* is the real traded volume in the minute, derived from the
+    delta of CMC's reported rolling 24h volume between polls. This matters:
+    the old build used the poll tick-count as "volume", which is roughly
+    constant, so the volume-ratio entry filter could almost never fire — a
+    silent, permanent block on every volume-gated strategy. Using the 24h
+    volume delta makes the volume filter a real signal again.
+    """
 
     bars: deque = field(default_factory=lambda: deque(maxlen=MAX_1M_BARS))
     cur_minute: Optional[datetime] = None
@@ -49,29 +59,50 @@ class MinuteBuilder:
     l: float = 0.0
     c: float = 0.0
     ticks: int = 0
+    vol: float = 0.0
+    _prev_vol24h: Optional[float] = None
 
-    def add(self, ts: datetime, price: float) -> Optional[Candle]:
+    def add(self, ts: datetime, price: float,
+            vol24h: Optional[float] = None) -> Optional[Candle]:
         """Add a tick; returns the COMPLETED candle when a minute rolls."""
         minute = ts.replace(second=0, microsecond=0)
-        done: Optional[Candle] = None
+        inc = self._volume_increment(vol24h)
         if self.cur_minute is None:
             self.cur_minute = minute
             self.o = self.h = self.l = self.c = price
             self.ticks = 1
+            self.vol = inc
             return None
         if minute > self.cur_minute:
             done = Candle(ts=self.cur_minute, open=self.o, high=self.h,
-                          low=self.l, close=self.c, volume=float(self.ticks))
+                          low=self.l, close=self.c,
+                          volume=self.vol if self.vol > 0 else float(self.ticks))
             self.bars.append(done)
             self.cur_minute = minute
             self.o = self.h = self.l = self.c = price
             self.ticks = 1
+            self.vol = inc
             return done
         self.h = max(self.h, price)
         self.l = min(self.l, price)
         self.c = price
         self.ticks += 1
+        self.vol += inc
         return None
+
+    def _volume_increment(self, vol24h: Optional[float]) -> float:
+        """Traded volume since the last tick ≈ positive change in the rolling
+        24h volume. The window can tick down as old trades age out, so we
+        floor negatives at 0 and let tick-count be the fallback when no 24h
+        volume is supplied."""
+        if vol24h is None:
+            return 0.0
+        prev = self._prev_vol24h
+        self._prev_vol24h = vol24h
+        if prev is None:
+            return 0.0
+        delta = vol24h - prev
+        return delta if delta > 0 else 0.0
 
     def resample(self, tf: Timeframe) -> list[Candle]:
         """1m bars -> tf bars (completed only)."""
@@ -114,6 +145,8 @@ class LiveLoop:
         self.started_at: Optional[datetime] = None
         self.last_poll: Optional[datetime] = None
         self.last_macro: Optional[datetime] = None
+        self.last_fg: Optional[datetime] = None
+        self.fear_greed_value: Optional[int] = None
         self.polls = 0
         self.errors = 0
         self.last_error = ""
@@ -141,10 +174,13 @@ class LiveLoop:
                 "detail": "blocked: symbol not liquidity-verified",
             })
             return
-        res = self.venue.place_limit(pos.symbol, pos.side, pos.avg_entry, pos.notional_usd)
+        chain_sym = self.scfg.chain_symbol(pos.symbol)
+        res = self.venue.place_limit(chain_sym, pos.side, pos.avg_entry, pos.notional_usd)
         self.venue_log.append({
             "ts": datetime.now(timezone.utc).isoformat(), "action": "open",
-            "symbol": pos.symbol, "notional_usd": round(pos.notional_usd, 2),
+            "symbol": pos.symbol, "chain_symbol": chain_sym,
+            "strategy": pos.meta.get("strategy", "reaction"),
+            "notional_usd": round(pos.notional_usd, 2),
             "ok": res.ok, "tx": res.tx_or_id, "detail": res.detail,
         })
         if res.ok and res.fill_price:
@@ -155,7 +191,8 @@ class LiveLoop:
 
     def _venue_close(self, trade) -> None:
         pos = trade.position
-        res = self.venue.market_close(pos.symbol, pos.side, abs(pos.fills[-1].notional_usd))
+        res = self.venue.market_close(self.scfg.chain_symbol(pos.symbol), pos.side,
+                                      abs(pos.fills[-1].notional_usd))
         self.venue_log.append({
             "ts": datetime.now(timezone.utc).isoformat(), "action": "close",
             "symbol": pos.symbol, "reason": trade.reason,
@@ -169,6 +206,32 @@ class LiveLoop:
     @property
     def running(self) -> bool:
         return self.started_at is not None
+
+    def poll_symbols(self) -> list[str]:
+        """Symbols to actually request quotes for. Once verification has run,
+        and poll_only_verified is set, we stop paying CMC credits for coins
+        that can never trade — the single biggest source of wasted credits."""
+        if (self.rcfg.poll_only_verified and self.verified is not None
+                and len(self.verified) > 0):
+            return [s for s in self.scfg.symbols if s in self.verified]
+        return list(self.scfg.symbols)
+
+    def credit_estimate(self) -> dict:
+        """Rough CMC credit burn so the operator can see the cost knob.
+        quotes = 1 credit per poll (one batched call); macro = 1 per refresh;
+        F&G = 1 per refresh (0 if disabled)."""
+        day = 86400
+        q = day / max(self.rcfg.poll_seconds, 10)
+        m = day / max(self.rcfg.macro_refresh_seconds, 60)
+        fg = (day / self.rcfg.fear_greed_refresh_seconds) if self.rcfg.fear_greed_refresh_seconds else 0
+        per_day = q + m + fg
+        return {
+            "per_day": round(per_day),
+            "per_month": round(per_day * 30),
+            "breakdown": {"quotes": round(q), "macro": round(m), "fear_greed": round(fg)},
+            "poll_seconds": self.rcfg.poll_seconds,
+            "polled_symbols": len(self.poll_symbols()),
+        }
 
     def warmup_info(self) -> dict:
         bars = {s: len(b.bars) for s, b in self.builders.items()}
@@ -194,11 +257,14 @@ class LiveLoop:
             "warmup": self.warmup_info(),
             "venue": self.rcfg.venue,
             "venue_log_tail": self.venue_log[-5:],
+            "strategies": [s.name for s in self.orch.strategies],
             "universe": {
                 "candidates": len(self.scfg.symbols),
+                "polled": len(self.poll_symbols()),
                 "verified": sorted(self.verified) if self.verified is not None else None,
                 "verified_count": len(self.verified) if self.verified is not None else None,
             },
+            "credits": self.credit_estimate(),
         }
 
     # ---------------- persistence ----------------
@@ -259,7 +325,7 @@ class LiveLoop:
         twak = TwakCLI(timeout_s=45)
         verified: dict[str, dict] = {}
         for sym in self.scfg.symbols:
-            res = twak.quote_swap("USDT", sym, usd=1.0, chain="bsc")
+            res = twak.quote_swap("USDT", self.scfg.chain_symbol(sym), usd=1.0, chain="bsc")
             if res.get("error"):
                 log.info("universe drop %s: %s", sym, str(res.get("error"))[:120])
                 continue
@@ -280,6 +346,37 @@ class LiveLoop:
         except Exception:
             log.exception("universe cache write failed")
 
+    # ---------------- warmup ----------------
+
+    def _backfill_warmup(self) -> None:
+        """Best-effort: pull historical OHLCV from CMC so every symbol/TF has
+        references on boot instead of warming up over many hours from live
+        ticks. Silently no-ops per symbol if the plan lacks the OHLCV
+        endpoint — the live accumulation path still works."""
+        if not self.rcfg.warmup_backfill or self.cmc is None:
+            return
+        bars = self.rcfg.warmup_backfill_bars
+        ok = 0
+        for sym in self.scfg.symbols:
+            for tf in self.live_tfs:
+                try:
+                    hist = self.cmc.ohlcv_historical(sym, tf, bars)
+                except Exception:
+                    hist = []
+                if len(hist) < self.scfg.sims.extrema_window * 2 + 4:
+                    continue
+                df = to_dataframe(hist)
+                self.orch.cold_start(sym, tf, df)
+                self.orch.update_references(sym, tf, df)
+                ok += 1
+        log.info("warmup backfill seeded %d (symbol,tf) reference sets", ok)
+
+    def _min_bars_needed(self) -> int:
+        """Fewest bars any active strategy needs — the live loop evaluates as
+        soon as that's met, and each strategy self-gates on its own minimum."""
+        mins = [s.min_bars for s in self.orch.strategies] or [28]
+        return max(20, min(mins))
+
     # ---------------- core loop ----------------
 
     async def run(self) -> None:
@@ -289,10 +386,13 @@ class LiveLoop:
         self.cmc = CMCClient(self.rcfg)
         self._restore()
         self.started_at = datetime.now(timezone.utc)
-        log.info("live loop started: %d candidates on %s", len(self.scfg.symbols),
+        log.info("live loop started: %d candidates, %d strategies on %s",
+                 len(self.scfg.symbols), len(self.orch.strategies),
                  [tf.value for tf in self.live_tfs])
         if self._should_verify():
             asyncio.get_event_loop().run_in_executor(None, self._verify_universe)
+        # warmup backfill off the event loop (network-heavy, best-effort)
+        asyncio.get_event_loop().run_in_executor(None, self._backfill_warmup)
         poll_s = max(int(self.rcfg.poll_seconds), 10)
         checkpoint_every = 30  # polls
         while True:
@@ -310,32 +410,46 @@ class LiveLoop:
         assert self.cmc is not None
         now = datetime.now(timezone.utc)
 
-        # 1) quotes -> ticks -> 1m candles
-        quotes = self.cmc.quotes(self.scfg.symbols)
-        self.prices.update(quotes)
+        # 1) quotes -> ticks -> 1m candles (volume = real 24h-volume delta).
+        #    Poll only tradable symbols once verified -> no wasted credits.
+        full = self.cmc.quotes_full(self.poll_symbols())
         completed: dict[str, Candle] = {}
-        for sym, price in quotes.items():
-            done = self.builders[sym].add(now, price)
+        for sym, q in full.items():
+            self.prices[sym] = q["price"]
+            done = self.builders[sym].add(now, q["price"], vol24h=q.get("volume_24h"))
             if done:
                 completed[sym] = done
         self.last_poll = now
         self.polls += 1
 
-        # 2) macro refresh every 5 min
-        if self.last_macro is None or (now - self.last_macro) > timedelta(minutes=5):
+        # 2) macro refresh on its own (credit-aware) cadence; F&G even rarer
+        macro_due = (self.last_macro is None
+                     or (now - self.last_macro).total_seconds() >= self.rcfg.macro_refresh_seconds)
+        if macro_due:
+            fg_secs = self.rcfg.fear_greed_refresh_seconds
+            fg_due = bool(fg_secs) and (self.last_fg is None
+                        or (now - self.last_fg).total_seconds() >= fg_secs)
             try:
-                self.macro = self.cmc.macro_snapshot(self.scfg.macro.lookback_hours)
+                self.macro = self.cmc.macro_snapshot(
+                    self.scfg.macro.lookback_hours,
+                    fetch_fear_greed=fg_due,
+                    cached_fear_greed=self.fear_greed_value,
+                )
                 self.last_macro = now
+                if fg_due and self.macro is not None:
+                    self.fear_greed_value = self.macro.fear_greed
+                    self.last_fg = now
             except Exception:
                 log.exception("macro refresh failed — gate fails closed")
                 self.macro = None
 
         # 3) on each completed 1m bar, check TF boundaries
+        need = self._min_bars_needed()
+        prices = dict(self.prices)
         for sym in completed:
             builder = self.builders[sym]
             for tf in self.live_tfs:
                 bars = builder.resample(tf)
-                need = self.scfg.sims.extrema_window * 2 + 4
                 if len(bars) < need:
                     continue
                 newest = bars[-1]
@@ -346,4 +460,4 @@ class LiveLoop:
                 df = to_dataframe(bars[-400:])
                 self.orch.update_references(sym, tf, df)
                 self.orch.evaluate(sym, tf, df, ts=newest.ts)
-                self.orch.on_candle(sym, tf, newest, dict(self.prices))
+                self.orch.on_candle(sym, tf, newest, prices)

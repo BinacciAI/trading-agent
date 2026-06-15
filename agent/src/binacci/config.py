@@ -188,27 +188,109 @@ class SimulationConfig(BaseModel):
     divergence_min_gap: int = 5
 
 
+# --------------------------------------------------------------------------
+# Multi-strategy configuration
+# --------------------------------------------------------------------------
+# Binacci runs a *portfolio of strategies* concurrently. Each one is an
+# independent opinion that still feeds the SAME deterministic execution
+# engine (margin model, slot cap, trailing SL, kill switch). More strategies
+# = more independent reasons to be in a market = wider trade opportunity,
+# without loosening any risk rule. Toggle any of them on/off via env, e.g.
+# ``BINACCI_STRATEGIES__MOMENTUM_BREAKOUT=false``.
+
+class StrategyToggles(BaseModel):
+    """Which strategies are active. All limit-entry, all risk-managed."""
+
+    reaction: bool = True            # the core 5-gate reaction strategy
+    momentum_breakout: bool = True   # Donchian breakout + retest
+    mean_reversion: bool = True      # RSI/Bollinger oversold reclaim
+    trend_follow: bool = True        # EMA-stack pullback
+    volatility_squeeze: bool = True  # Bollinger squeeze release
+
+
+class BreakoutConfig(BaseModel):
+    """Momentum breakout: enter the retest of a Donchian breakout."""
+
+    donchian_period: int = 20
+    volume_min_ratio: float = 1.20
+    #: Retest limit sits this % below the broken level (buy the pullback).
+    retest_band_pct: float = 0.35
+    #: Target multiplier applied to the timeframe's base target.
+    target_mult: float = 1.5
+    require_macro: bool = True
+
+
+class MeanReversionConfig(BaseModel):
+    """Fade an oversold flush back to the mean."""
+
+    rsi_oversold: float = 30.0
+    rsi_overbought: float = 70.0
+    bb_period: int = 20
+    bb_std: float = 2.0
+    #: Require the last bar to reclaim (close back inside the band).
+    require_reclaim: bool = True
+    target_mult: float = 1.0
+    #: Counter-trend dip buys do not need a risk-on macro light.
+    require_macro: bool = False
+
+
+class TrendConfig(BaseModel):
+    """Ride an established trend; enter on the pullback to the mid EMA."""
+
+    ema_fast: int = 8
+    ema_mid: int = 21
+    ema_slow: int = 55
+    #: Price must be within this % of the mid EMA to arm the pullback limit.
+    pullback_tolerance_pct: float = 0.8
+    target_mult: float = 1.25
+    require_macro: bool = True
+
+
+class SqueezeConfig(BaseModel):
+    """Bollinger squeeze: low-bandwidth coil, then expansion breakout."""
+
+    bb_period: int = 20
+    bb_std: float = 2.0
+    lookback: int = 120
+    #: Bandwidth must sit in this lowest quantile to count as a squeeze.
+    squeeze_quantile: float = 0.30
+    #: Retest limit sits this % below the upper band on the breakout bar.
+    retest_band_pct: float = 0.40
+    target_mult: float = 1.5
+    require_macro: bool = True
+
+
 class StrategyConfig(BaseSettings):
     """Top-level strategy configuration (env prefix ``BINACCI_``)."""
 
     model_config = SettingsConfigDict(env_prefix="BINACCI_", env_nested_delimiter="__")
 
-    #: Candidate universe — tokens with real PancakeSwap/BSC liquidity
-    #: (majors via Binance-pegged tokens + BSC-native ecosystem). The live
-    #: loop VERIFIES each candidate through a TWAK quote at startup and
-    #: auto-drops anything illiquid or unresolvable, so this list is an
-    #: upper bound, not a promise. Override: BINACCI_SYMBOLS.
+    #: Candidate universe — BSC-ecosystem tokens chosen for REAL PancakeSwap
+    #: liquidity (BSC-native projects + the deepest Binance-Peg majors). The
+    #: previous list was majority CEX-only majors (XRP, ADA, EOS, XLM...)
+    #: that do not resolve as a BSC swap, so liquidity verification collapsed
+    #: it to ~12. This list is weighted to BSC so 50+ survive verification.
+    #: The live loop still TWAK-verifies each candidate and auto-drops any
+    #: that are illiquid/unresolvable, so it remains an upper bound. CMC
+    #: quotes use these tickers; swaps use :meth:`chain_symbol`.
+    #: Override: BINACCI_SYMBOLS.
     symbols: list[str] = Field(default_factory=lambda: [
-        # majors / Binance-pegged
-        "BNB", "BTC", "ETH", "XRP", "ADA", "DOGE", "DOT", "LINK", "LTC",
-        "AVAX", "TRX", "ATOM", "FIL", "UNI", "AAVE", "NEAR", "BCH", "ETC",
-        "EOS", "XLM", "MATIC", "SHIB", "PEPE", "TON", "INJ", "FET",
-        "SUSHI", "COMP", "SNX", "1INCH", "YFI", "CRV", "MKR", "LDO",
-        # BSC-native / ecosystem
-        "CAKE", "TWT", "XVS", "FLOKI", "BSW", "SFP", "GMT", "ID", "EDU",
-        "HOOK", "MBOX", "ALICE", "AXS", "C98", "BAKE", "DODO", "ALPHA",
-        "TLM", "CHESS", "LINA", "HIGH", "DAR", "BEL", "DEGO", "WING", "LIT",
+        # BSC-native blue chips (deep PancakeSwap liquidity)
+        "BNB", "CAKE", "TWT", "XVS", "FLOKI", "BSW", "SFP", "ALPACA",
+        "BANANA", "BURGER", "ANKR", "INJ", "FET", "ID", "EDU", "HOOK",
+        "MBOX", "ALICE", "AXS", "C98", "BAKE", "DODO", "ALPHA", "TLM",
+        "CHESS", "HIGH", "DAR", "BEL", "LINA", "RACA", "GMT", "UNFI",
+        "AUTO", "BIFI", "WIN", "TKO", "LISTA", "SANTOS", "LAZIO", "PORTO",
+        # deepest Binance-Peg majors that DO trade on PancakeSwap
+        "BTC", "ETH", "DOGE", "ADA", "DOT", "LINK", "LTC", "AVAX", "TRX",
+        "ATOM", "UNI", "BCH", "ETC", "FIL", "NEAR", "MATIC", "SHIB", "PEPE",
     ])
+    #: CMC ticker -> on-chain BSC swap symbol, for the few that differ.
+    #: (BTC trades as the Binance-Peg BTCB token on BSC, etc.) Identity for
+    #: anything not listed here.
+    chain_symbols: dict[str, str] = Field(default_factory=lambda: {
+        "BTC": "BTCB",
+    })
     quote: str = "USDT"
     entry_timeframes: list[Timeframe] = Field(
         default_factory=lambda: list(Timeframe)
@@ -221,6 +303,13 @@ class StrategyConfig(BaseSettings):
     filters: FilterConfig = Field(default_factory=FilterConfig)
     macro: MacroConfig = Field(default_factory=MacroConfig)
     sims: SimulationConfig = Field(default_factory=SimulationConfig)
+
+    #: Active strategies + their parameters (the multi-strategy portfolio).
+    strategies: StrategyToggles = Field(default_factory=StrategyToggles)
+    breakout: BreakoutConfig = Field(default_factory=BreakoutConfig)
+    mean_reversion: MeanReversionConfig = Field(default_factory=MeanReversionConfig)
+    trend: TrendConfig = Field(default_factory=TrendConfig)
+    squeeze: SqueezeConfig = Field(default_factory=SqueezeConfig)
 
     #: Entries are ALWAYS limit orders at a level — never market.
     entry_order_type: str = "limit"
@@ -248,6 +337,10 @@ class StrategyConfig(BaseSettings):
     def target_for(self, tf: Timeframe) -> float:
         return self.targets_pct.get(tf, DEFAULT_TARGETS[tf])
 
+    def chain_symbol(self, symbol: str) -> str:
+        """The symbol to swap on-chain for a given CMC ticker."""
+        return self.chain_symbols.get(symbol, symbol)
+
 
 class RuntimeConfig(BaseSettings):
     """Operational settings: keys, endpoints, venue selection."""
@@ -263,6 +356,22 @@ class RuntimeConfig(BaseSettings):
     #: Live loop poll interval (seconds). One batched CMC quotes call per
     #: poll regardless of symbol count (1 credit covers up to 100 symbols).
     poll_seconds: int = 30
+    #: Macro gate refresh interval (seconds). Global-metrics is 1 credit per
+    #: refresh, so this is decoupled from poll_seconds to control credit burn.
+    macro_refresh_seconds: int = 600
+    #: Fear & Greed refresh interval (seconds) — cheap context, refreshed
+    #: rarely. Set 0 to disable the F&G call entirely.
+    fear_greed_refresh_seconds: int = 3600
+    #: Only poll CMC quotes for liquidity-VERIFIED symbols once verification
+    #: completes. Stops paying for quotes on coins that can never trade — the
+    #: single biggest source of wasted CMC credits.
+    poll_only_verified: bool = True
+    #: Best-effort: on boot, backfill historical OHLCV from CMC so references
+    #: exist immediately instead of warming up over many hours from live
+    #: ticks. Silently falls back to live accumulation if the plan/endpoint
+    #: is unavailable.
+    warmup_backfill: bool = True
+    warmup_backfill_bars: int = 320
     #: Liquidity verification: "auto" (verify when twak is installed),
     #: "true", or "false". Unverified symbols never reach the live venue.
     verify_liquidity: str = "auto"

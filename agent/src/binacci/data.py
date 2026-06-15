@@ -107,14 +107,24 @@ class CMCClient:
         self._macro_history: list[tuple[datetime, float, float, float]] = []
 
     def quotes(self, symbols: Iterable[str], convert: str = "USD") -> dict[str, float]:
+        """Latest price per symbol. One batched call (1 credit / 100 symbols)."""
+        return {s: q["price"] for s, q in self.quotes_full(symbols, convert).items()}
+
+    def quotes_full(self, symbols: Iterable[str], convert: str = "USD") -> dict[str, dict]:
+        """Latest price PLUS the fields the live loop needs to build a real
+        volume signal: 24h volume and 1h/24h percent change. Same single
+        batched request as :meth:`quotes` — no extra credits."""
+        syms = list(symbols)
+        if not syms:
+            return {}
         r = self._client.get(
             "/v2/cryptocurrency/quotes/latest",
-            params={"symbol": ",".join(symbols), "convert": convert,
+            params={"symbol": ",".join(syms), "convert": convert,
                     "skip_invalid": "true"},
         )
         r.raise_for_status()
         data = r.json()["data"]
-        out: dict[str, float] = {}
+        out: dict[str, dict] = {}
         for sym, entries in data.items():
             if isinstance(entries, list):
                 if not entries:
@@ -125,11 +135,54 @@ class CMCClient:
                                                 .get("market_cap") or 0))
             else:
                 e = entries
+            q = (e.get("quote") or {}).get(convert) or {}
             try:
-                out[sym] = float(e["quote"][convert]["price"])
+                price = float(q["price"])
             except (KeyError, TypeError):
                 continue
+            out[sym] = {
+                "price": price,
+                "volume_24h": float(q.get("volume_24h") or 0.0),
+                "percent_change_1h": float(q.get("percent_change_1h") or 0.0),
+                "percent_change_24h": float(q.get("percent_change_24h") or 0.0),
+            }
         return out
+
+    def ohlcv_historical(self, symbol: str, tf: Timeframe, bars: int,
+                         convert: str = "USD") -> list[Candle]:
+        """Best-effort historical OHLCV for warmup. Returns [] if the plan
+        does not include the OHLCV endpoint (the loop then warms from live
+        ticks instead). Uses the closest standard interval CMC supports and
+        resamples to the requested non-standard timeframe if needed."""
+        interval, std_minutes = _closest_cmc_interval(tf.minutes)
+        count = min(max(int(bars * tf.minutes / std_minutes) + 5, bars), 10000)
+        try:
+            r = self._client.get(
+                "/v2/cryptocurrency/ohlcv/historical",
+                params={"symbol": symbol, "convert": convert,
+                        "interval": interval, "count": count},
+            )
+            r.raise_for_status()
+        except Exception:
+            return []
+        try:
+            payload = r.json()["data"]
+            quotes = payload["quotes"] if isinstance(payload, dict) else payload[0]["quotes"]
+        except (KeyError, IndexError, TypeError):
+            return []
+        candles: list[Candle] = []
+        for row in quotes:
+            o = row.get("quote", {}).get(convert, {})
+            try:
+                ts = datetime.fromisoformat(row["time_open"].replace("Z", "+00:00"))
+                candles.append(Candle(ts=ts, open=float(o["open"]), high=float(o["high"]),
+                                      low=float(o["low"]), close=float(o["close"]),
+                                      volume=float(o.get("volume") or 0.0)))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if std_minutes != tf.minutes and candles:
+            candles = resample_candles(candles, tf)
+        return candles[-bars:]
 
     def global_metrics(self) -> dict:
         r = self._client.get("/v1/global-metrics/quotes/latest", params={"convert": "USD"})
@@ -144,10 +197,14 @@ class CMCClient:
         except Exception:
             return None
 
-    def macro_snapshot(self, lookback_hours: int = 24) -> MacroSnapshot:
+    def macro_snapshot(self, lookback_hours: int = 24, fetch_fear_greed: bool = True,
+                       cached_fear_greed: Optional[int] = None) -> MacroSnapshot:
         """Builds the macro gate input. Maintains an in-process history ring
         to compute lookback changes; for production persistence, snapshots
-        are also written by the agent loop to disk."""
+        are also written by the agent loop to disk.
+
+        F&G is on its own cadence (it barely moves intraday and costs a
+        credit), so the caller can skip the call and inject a cached value."""
         g = self.global_metrics()
         q = g["quote"]["USD"]
         now = datetime.now(timezone.utc)
@@ -166,6 +223,7 @@ class CMCClient:
         def chg(cur: float, old: float) -> float:
             return (cur - old) / old * 100.0 if old else 0.0
 
+        fg = self.fear_greed() if fetch_fear_greed else cached_fear_greed
         return MacroSnapshot(
             total_market_cap_usd=total_cap,
             btc_dominance_pct=btc_d,
@@ -173,11 +231,35 @@ class CMCClient:
             total_cap_change_pct=chg(total_cap, past[1]),
             btc_dominance_change_pct=btc_d - past[2],
             usdt_dominance_change_pct=usdt_d - past[3],
-            fear_greed=self.fear_greed(),
+            fear_greed=fg,
         )
 
     def close(self) -> None:
         self._client.close()
+
+
+#: CMC-supported OHLCV interval strings -> minutes.
+_CMC_INTERVALS: dict[str, int] = {
+    "1m": 1, "5m": 5, "10m": 10, "15m": 15, "30m": 30, "45m": 45,
+    "1h": 60, "2h": 120, "4h": 240, "6h": 360, "12h": 720,
+    "1d": 1440, "3d": 4320, "7d": 10080,
+}
+
+
+def _closest_cmc_interval(minutes: int) -> tuple[str, int]:
+    """Pick a CMC OHLCV interval for a (possibly non-standard) timeframe.
+
+    Exact match if CMC supports it; otherwise the largest supported interval
+    that divides the target (so it resamples cleanly); else fall back to 1m.
+    """
+    for name, m in _CMC_INTERVALS.items():
+        if m == minutes:
+            return name, m
+    best = ("1m", 1)
+    for name, m in _CMC_INTERVALS.items():
+        if minutes % m == 0 and m > best[1]:
+            best = (name, m)
+    return best
 
 
 def resample_candles(candles: list[Candle], tf: Timeframe) -> list[Candle]:

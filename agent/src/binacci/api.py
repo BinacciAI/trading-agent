@@ -95,6 +95,8 @@ def build_app():
             px = ctx.prices.get(p.symbol, p.avg_entry)
             out.append({
                 "symbol": p.symbol, "tf": p.timeframe.value, "side": p.side.value,
+                "strategy": p.meta.get("strategy", "reaction"),
+                "level_kind": p.meta.get("level_kind", ""),
                 "state": p.state.value, "avg_entry": p.avg_entry,
                 "qty": p.qty, "notional_usd": p.notional_usd,
                 "gain_pct": round(p.gain_pct(px), 3),
@@ -108,6 +110,7 @@ def build_app():
     def trades():
         return [{
             "symbol": t.position.symbol, "tf": t.position.timeframe.value,
+            "strategy": t.position.meta.get("strategy", "reaction"),
             "pnl_usd": round(t.pnl_usd, 2), "reason": t.reason,
             "closed": t.position.closed_ts.isoformat() if t.position.closed_ts else None,
         } for t in ctx.engine.closed]
@@ -118,33 +121,65 @@ def build_app():
         for tr in ctx.orchestrator.traces[-limit:]:
             out.append({
                 "symbol": tr.symbol, "tf": tr.timeframe.value, "ts": tr.ts.isoformat(),
-                "entered": tr.entered,
+                "strategy": tr.strategy, "entered": tr.entered,
                 "gates": [{"step": g.step.value, "passed": g.passed, "detail": g.detail}
                           for g in tr.gates],
             })
         return out
 
-    @app.get("/spec")
-    def spec(symbol: str = "BNB", timeframe: str = "4h"):
-        from .skill import generate_strategy_spec
+    @app.get("/strategies")
+    def strategies():
+        """The active strategy portfolio and per-strategy live stats."""
+        from .skill import strategy_catalog
 
+        names = [s.name for s in ctx.orchestrator.strategies]
+        open_by: dict[str, int] = {}
+        pnl_by: dict[str, float] = {}
+        for p in ctx.engine.open_positions():
+            k = p.meta.get("strategy", "reaction")
+            open_by[k] = open_by.get(k, 0) + 1
+        for t in ctx.engine.closed:
+            k = t.position.meta.get("strategy", "reaction")
+            pnl_by[k] = round(pnl_by.get(k, 0.0) + t.pnl_usd, 2)
+        return {
+            "active": names,
+            "catalog": strategy_catalog(),
+            "open_positions_by_strategy": open_by,
+            "realized_pnl_by_strategy": pnl_by,
+        }
+
+    @app.get("/spec")
+    def spec(symbol: str = "BNB", timeframe: str = "4h", strategy: str = "reaction"):
+        from .skill import generate_portfolio_spec, generate_strategy_spec
+
+        if strategy == "portfolio":
+            return generate_portfolio_spec(
+                ctx.scfg, symbol=symbol.upper(), tf=Timeframe(timeframe),
+                source=SyntheticSource())
         return generate_strategy_spec(
             ctx.scfg, symbol=symbol.upper(), tf=Timeframe(timeframe),
-            source=SyntheticSource(),
+            source=SyntheticSource(), strategy=strategy,
         )
 
     @app.get("/manifest")
-    def manifest():
+    def manifest(strategy: str = "reaction"):
         from .skill import skill_manifest
 
-        return skill_manifest()
+        return skill_manifest(strategy)
+
+    @app.get("/manifests")
+    def manifests():
+        from .skill import all_skill_manifests
+
+        return all_skill_manifests()
 
     @app.get("/signals")
     def signals():
         """Pending limit entries — levels parked by SimB awaiting a touch."""
         return [{
             "symbol": p.signal.symbol, "tf": p.signal.timeframe.value,
-            "side": p.signal.side.value, "level_price": p.signal.level_price,
+            "side": p.signal.side.value, "strategy": p.signal.strategy,
+            "level_price": p.signal.level_price,
             "target_pct": p.signal.target_pct,
             "level_kind": p.signal.meta.get("level_kind", ""),
             "created": p.created.isoformat(), "expires": p.expires.isoformat(),

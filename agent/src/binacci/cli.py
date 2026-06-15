@@ -24,12 +24,18 @@ def cmd_backtest(args) -> int:
 
 
 def cmd_spec(args) -> int:
-    from .skill import generate_strategy_spec
+    from .skill import generate_portfolio_spec, generate_strategy_spec
 
     cfg = StrategyConfig()
-    spec = generate_strategy_spec(cfg, symbol=args.symbol.upper(),
-                                  tf=Timeframe(args.timeframe),
-                                  backtest_bars=args.bars)
+    if getattr(args, "portfolio", False) or args.strategy == "portfolio":
+        spec = generate_portfolio_spec(cfg, symbol=args.symbol.upper(),
+                                       tf=Timeframe(args.timeframe),
+                                       backtest_bars=args.bars)
+    else:
+        spec = generate_strategy_spec(cfg, symbol=args.symbol.upper(),
+                                      tf=Timeframe(args.timeframe),
+                                      backtest_bars=args.bars,
+                                      strategy=args.strategy)
     out = json.dumps(spec, indent=2, default=str)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
@@ -73,8 +79,22 @@ def cmd_paper(args) -> int:
 
     print(json.dumps(engine.snapshot(prices), indent=2))
     print(f"closed trades: {len(engine.closed)}")
+    by_strat: dict[str, list[float]] = {}
+    for t in engine.closed:
+        by_strat.setdefault(t.position.meta.get("strategy", "reaction"), []).append(t.pnl_usd)
+    print("by strategy:")
+    for name, pnls in sorted(by_strat.items()):
+        print(f"  {name:20} trades={len(pnls):3d} pnl={sum(pnls):+8.2f} USD")
     for t in engine.closed[-10:]:
-        print(f"  {t.position.symbol} {t.reason:>14} {t.pnl_usd:+8.2f} USD")
+        strat = t.position.meta.get("strategy", "reaction")
+        print(f"  {t.position.symbol:6} {strat:18} {t.reason:>14} {t.pnl_usd:+8.2f} USD")
+    return 0
+
+
+def cmd_strategies(args) -> int:
+    from .skill import strategy_catalog
+
+    print(json.dumps(strategy_catalog(), indent=2))
     return 0
 
 
@@ -113,8 +133,16 @@ def main(argv=None) -> int:
     s.add_argument("--symbol", default="BNB")
     s.add_argument("--timeframe", default="4h")
     s.add_argument("--bars", type=int, default=1500)
+    s.add_argument("--strategy", default="reaction",
+                   help="reaction | momentum_breakout | mean_reversion | "
+                        "trend_follow | volatility_squeeze | portfolio")
+    s.add_argument("--portfolio", action="store_true",
+                   help="emit one spec covering the whole active portfolio")
     s.add_argument("--output", default="")
     s.set_defaults(fn=cmd_spec)
+
+    st = sub.add_parser("strategies", help="list the strategy catalog")
+    st.set_defaults(fn=cmd_strategies)
 
     pp = sub.add_parser("paper", help="multi-symbol paper session")
     pp.add_argument("--symbols", default="BNB,BTC,ETH,CAKE,SOL")

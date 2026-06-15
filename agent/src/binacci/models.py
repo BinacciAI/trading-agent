@@ -87,6 +87,10 @@ class EntrySignal:
     gates: list[GateResult]
     ts: datetime
     target_pct: float
+    #: Which strategy produced this signal. Positions are unique per
+    #: (symbol, timeframe, strategy), so independent strategies can hold
+    #: concurrent positions on the same market.
+    strategy: str = "reaction"
     meta: dict = field(default_factory=dict)
 
 

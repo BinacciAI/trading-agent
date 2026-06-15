@@ -90,21 +90,25 @@ class ExecutionEngine:
     def slots_free(self) -> int:
         return max(self.cfg.risk.max_positions - self.used_slots(), 0)
 
-    def can_open(self, symbol: str, tf: Timeframe) -> bool:
+    def can_open(self, symbol: str, tf: Timeframe, strategy: str = "reaction") -> bool:
         if self.kill_switch_fired:
             return False
         if self.slots_free() <= 0:
             return False
-        # one position per (symbol, timeframe)
+        # one position per (symbol, timeframe, strategy) — independent
+        # strategies may each hold a position on the same market.
         for p in self.positions:
-            if p.symbol == symbol and p.timeframe == tf and p.state is not PositionState.CLOSED:
+            if (p.symbol == symbol and p.timeframe == tf
+                    and p.meta.get("strategy", "reaction") == strategy
+                    and p.state is not PositionState.CLOSED):
                 return False
         return True
 
     # ---------------- lifecycle ----------------
 
     def open_from_signal(self, sig: EntrySignal, fill_price: float, ts: datetime) -> Optional[Position]:
-        if not self.can_open(sig.symbol, sig.timeframe):
+        strategy = getattr(sig, "strategy", "reaction")
+        if not self.can_open(sig.symbol, sig.timeframe, strategy):
             return None
         notional = self.entry_notional_usd()
         qty = notional / fill_price
@@ -115,7 +119,9 @@ class ExecutionEngine:
             state=PositionState.OPEN,
             target_pct=sig.target_pct,
             opened_ts=ts,
-            meta={"level": sig.level_price, "gates": [g.step.value for g in sig.gates]},
+            meta={"level": sig.level_price, "strategy": strategy,
+                  "gates": [g.step.value for g in sig.gates],
+                  **dict(sig.meta or {})},
         )
         pos.fills.append(Fill(ts=ts, price=fill_price, qty=qty, notional_usd=notional, tag="entry"))
         self.positions.append(pos)
