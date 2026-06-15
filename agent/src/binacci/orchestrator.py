@@ -108,18 +108,22 @@ class Orchestrator:
         an independent 5-gate evaluation that, on success, parks a pending
         limit (gate 05 completes on touch via :meth:`on_candle`). Strategies
         are isolated: one strategy's block never affects another's entry."""
-        side = Side.LONG  # spot default; perps venue may evaluate shorts too
-
         # Shared reference state (only gates strategies that require it).
         ref = self.book.get(symbol, tf)
         max_age = timedelta(minutes=tf.minutes * (self.cfg.sims.extrema_window * 6))
         fresh = ref is not None and (ts - ref.ts) <= max_age
 
+        sides = [Side.LONG] + ([Side.SHORT] if self.cfg.allow_shorts else [])
         last_trace: Optional[DecisionTrace] = None
         for strat in self.strategies:
             if len(df) < strat.min_bars:
                 continue
-            last_trace = self._evaluate_one(strat, symbol, tf, df, ts, side, ref, fresh)
+            for s in sides:
+                tr = self._evaluate_one(strat, symbol, tf, df, ts, s, ref, fresh)
+                last_trace = tr
+                # if this strategy parked an entry, don't also try the other side
+                if tr.gates and tr.gates[-1].step is GateStep.LEVEL and tr.gates[-1].passed:
+                    break
         return last_trace or DecisionTrace(symbol=symbol, timeframe=tf, ts=ts)
 
     def _evaluate_one(self, strat: Strategy, symbol: str, tf: Timeframe,

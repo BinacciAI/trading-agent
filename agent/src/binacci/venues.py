@@ -133,6 +133,15 @@ class TwakCLI:
     def compete_status(self) -> dict:
         return self.run("compete", "status")
 
+    # ---- PancakeSwap perpetuals (long & short, self-custody) ----
+    def perps_open(self, symbol: str, direction: str, usd: float,
+                   leverage: float = 2.0, chain: str = "bsc") -> dict:
+        return self.run("perps", "open", symbol, "--side", direction,
+                        "--usd", f"{usd:.2f}", "--leverage", str(leverage), "--chain", chain)
+
+    def perps_close(self, symbol: str, chain: str = "bsc") -> dict:
+        return self.run("perps", "close", symbol, "--chain", chain)
+
 
 # --------------------------------------------------------------------------
 # PancakeSwap spot via TWAK (BSC mainnet)
@@ -204,23 +213,68 @@ class PancakeSpotVenue:
 
 @dataclass
 class PerpsVenue:
-    """BSC perps — roadmap. The twak CLI surface (v. June 2026) exposes
-    spot swaps, transfers, ERC-20, x402 and automations, but not perps
-    order placement; perps integration lands via the BNB AI Agent SDK
-    primitives post-hackathon. Honest stub: never silently no-ops."""
+    """PancakeSwap perpetuals via TWAK — LONG and SHORT, self-custody. Opens a
+    leveraged perp the moment the orchestrator's level is touched (identical
+    fill semantics to the backtester); closes on the engine's exit. Leverage
+    from BINACCI_PERPS_LEVERAGE (default 2x). Honest: if the installed twak
+    build lacks a perps surface, it reports the error rather than no-op."""
 
     rcfg: RuntimeConfig
+    twak: TwakCLI = field(default_factory=TwakCLI)
     name: str = "perps"
 
+    def _leverage(self) -> float:
+        import os
+        try:
+            return max(1.0, float(os.environ.get("BINACCI_PERPS_LEVERAGE", "2")))
+        except ValueError:
+            return 2.0
+
+    def preflight(self) -> tuple[bool, str]:
+        if not self.twak.installed:
+            return False, "twak CLI not installed"
+        if not self.twak.auth_ok():
+            return False, "twak not authenticated (TWAK_ACCESS_ID/TWAK_HMAC_SECRET)"
+        if not self.twak.wallet_ok():
+            return False, "twak wallet missing"
+        if self.rcfg.use_testnet:
+            return False, "perps need mainnet — set BINACCI_USE_TESTNET=false"
+        return True, "ready"
+
     def place_limit(self, symbol: str, side: Side, price: float, notional_usd: float) -> OrderResult:
-        return OrderResult(ok=False, venue=self.name,
-                           detail="perps venue is roadmap — use paper or pancake")
+        ok, why = self.preflight()
+        if not ok:
+            return OrderResult(ok=False, venue=self.name, detail=f"preflight: {why}")
+        direction = "long" if side is Side.LONG else "short"
+        lev = self._leverage()
+        res = self.twak.perps_open(symbol, direction, usd=notional_usd, leverage=lev)
+        if res.get("error"):
+            log.error("perps open failed: %s", res)
+            return OrderResult(ok=False, venue=self.name, detail=str(res.get("error"))[:300])
+        return OrderResult(
+            ok=True, venue=self.name,
+            tx_or_id=str(res.get("txHash") or res.get("hash") or res.get("positionId") or ""),
+            fill_price=float(res.get("entryPrice") or res.get("price") or price),
+            detail=f"{direction} {lev:.0f}x perp opened on level touch",
+        )
 
     def market_close(self, symbol: str, side: Side, notional_usd: float) -> OrderResult:
-        return OrderResult(ok=False, venue=self.name, detail="perps venue is roadmap")
+        ok, why = self.preflight()
+        if not ok:
+            return OrderResult(ok=False, venue=self.name, detail=f"preflight: {why}")
+        res = self.twak.perps_close(symbol)
+        if res.get("error"):
+            log.error("perps close failed: %s", res)
+            return OrderResult(ok=False, venue=self.name, detail=str(res.get("error"))[:300])
+        return OrderResult(ok=True, venue=self.name,
+                           tx_or_id=str(res.get("txHash") or res.get("hash") or ""))
 
     def balance_usd(self) -> float:
-        return 0.0
+        res = self.twak.balance("bsc")
+        try:
+            return float(res.get("totalUsd") or res.get("totalUSD") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
 
 def make_venue(cfg: RuntimeConfig) -> Venue:

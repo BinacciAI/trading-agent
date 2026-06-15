@@ -74,10 +74,17 @@ class Strategy:
                 side: Side = Side.LONG) -> Optional[StrategyProposal]:
         raise NotImplementedError
 
-    # -- shared helper: clamp a long limit just below price within a band --
+    # -- shared helpers: clamp a limit near price, on the correct side --
     def _long_limit_ok(self, df: pd.DataFrame, level: float, max_below_pct: float = 4.0) -> bool:
         price = float(df["close"].iloc[-1])
         return price * (1 - max_below_pct / 100.0) <= level <= price * 1.001
+
+    def _short_limit_ok(self, df: pd.DataFrame, level: float, max_above_pct: float = 4.0) -> bool:
+        price = float(df["close"].iloc[-1])
+        return price * 0.999 <= level <= price * (1 + max_above_pct / 100.0)
+
+    def _limit_ok(self, df, level, side, band=4.0):
+        return self._long_limit_ok(df, level, band) if side is Side.LONG else self._short_limit_ok(df, level, band)
 
 
 # --------------------------------------------------------------------------
@@ -134,34 +141,38 @@ class MomentumBreakoutStrategy(Strategy):
         self.min_bars = max(self.bk.donchian_period + 5, 30)
 
     def propose(self, symbol, tf, df, side=Side.LONG):
-        if side is not Side.LONG:
-            return None
         p = self.bk.donchian_period
         if len(df) < p + 2:
             return None
         close = df["close"]
         price = float(close.iloc[-1])
-        # prior Donchian high EXCLUDING the current bar
-        prior_high = float(df["high"].iloc[-(p + 1):-1].max())
-        broke_out = price > prior_high
-        if not broke_out:
-            return None
-        cmd_series = cmd(close, self.cfg.filters.cmd_fast, self.cfg.filters.cmd_slow)
-        cmd_rising = float(cmd_series.iloc[-1]) > float(cmd_series.iloc[-2])
+        cs = cmd(close, self.cfg.filters.cmd_fast, self.cfg.filters.cmd_slow)
+        cmd_now, cmd_prev = float(cs.iloc[-1]), float(cs.iloc[-2])
         vol = float(volume_ratio(df["volume"], self.cfg.filters.volume_lookback).iloc[-1])
-        if not (cmd_rising and vol >= self.bk.volume_min_ratio):
-            return None
-        # retest limit: just below the broken level
-        level = prior_high * (1 - self.bk.retest_band_pct / 100.0)
-        if not self._long_limit_ok(df, level, max_below_pct=self.bk.retest_band_pct + 1.0):
+        if vol < self.bk.volume_min_ratio:
             return None
         target = self.cfg.target_for(tf) * self.bk.target_mult
+        if side is Side.LONG:
+            prior = float(df["high"].iloc[-(p + 1):-1].max())
+            if not (price > prior and cmd_now > cmd_prev):
+                return None
+            level = prior * (1 - self.bk.retest_band_pct / 100.0)
+            reasons = [f"breakout>{prior:.6g}", "cmd_rising", f"vol_x{vol:.2f}"]
+            lk = "donchian_retest"
+        else:
+            prior = float(df["low"].iloc[-(p + 1):-1].min())
+            if not (price < prior and cmd_now < cmd_prev):
+                return None
+            level = prior * (1 + self.bk.retest_band_pct / 100.0)
+            reasons = [f"breakdown<{prior:.6g}", "cmd_falling", f"vol_x{vol:.2f}"]
+            lk = "donchian_retest_short"
+        if not self._limit_ok(df, level, side, self.bk.retest_band_pct + 1.0):
+            return None
         return StrategyProposal(
             strategy=self.name, side=side, level_price=level,
-            level_kind="donchian_retest", strength=min(1.0, vol / 2.0),
-            reasons=[f"breakout>{prior_high:.6g}", f"cmd_rising", f"vol_x{vol:.2f}"],
-            target_pct=target, requires_macro=self.requires_macro,
-            meta={"prior_high": prior_high, "volume_ratio": vol},
+            level_kind=lk, strength=min(1.0, vol / 2.0),
+            reasons=reasons, target_pct=target, requires_macro=self.requires_macro,
+            meta={"donchian": prior, "volume_ratio": vol},
         )
 
 
@@ -187,34 +198,36 @@ class MeanReversionStrategy(Strategy):
         self.min_bars = max(self.mr.bb_period + 5, self.cfg.filters.rsi_period + 5, 30)
 
     def propose(self, symbol, tf, df, side=Side.LONG):
-        if side is not Side.LONG:
-            return None
         close = df["close"]
         lo, mid, up = bollinger(close, self.mr.bb_period, self.mr.bb_std)
-        lo_now = float(lo.iloc[-1])
-        if pd.isna(lo_now):
+        if pd.isna(lo.iloc[-1]) or pd.isna(up.iloc[-1]) or pd.isna(lo.iloc[-2]):
             return None
         r = float(rsi(close, self.cfg.filters.rsi_period).iloc[-1])
         price = float(close.iloc[-1])
-        prev_low = float(df["low"].iloc[-2])
-        # evidence: recent pierce of the lower band + oversold RSI
-        pierced = prev_low <= float(lo.iloc[-2]) if not pd.isna(lo.iloc[-2]) else False
-        oversold = r <= self.mr.rsi_oversold
-        if not (pierced and oversold):
-            return None
-        # reclaim: current close back at/above the lower band
-        if self.mr.require_reclaim and price < lo_now:
-            return None
-        level = lo_now  # buy the retest of the band
-        if not self._long_limit_ok(df, level, max_below_pct=3.0):
-            return None
         target = self.cfg.target_for(tf) * self.mr.target_mult
+        if side is Side.LONG:
+            if not (float(df["low"].iloc[-2]) <= float(lo.iloc[-2]) and r <= self.mr.rsi_oversold):
+                return None
+            level = float(lo.iloc[-1])
+            if self.mr.require_reclaim and price < level:
+                return None
+            reasons = [f"rsi={r:.1f}<={self.mr.rsi_oversold}", "bb_lower_pierce", "reclaim"]
+            lk = "bb_lower_reclaim"; strg = min(1.0, (self.mr.rsi_oversold - r + 10) / 30.0)
+        else:
+            if not (float(df["high"].iloc[-2]) >= float(up.iloc[-2]) and r >= self.mr.rsi_overbought):
+                return None
+            level = float(up.iloc[-1])
+            if self.mr.require_reclaim and price > level:
+                return None
+            reasons = [f"rsi={r:.1f}>={self.mr.rsi_overbought}", "bb_upper_pierce", "reclaim"]
+            lk = "bb_upper_reclaim"; strg = min(1.0, (r - self.mr.rsi_overbought + 10) / 30.0)
+        if not self._limit_ok(df, level, side, 3.0):
+            return None
         return StrategyProposal(
             strategy=self.name, side=side, level_price=level,
-            level_kind="bb_lower_reclaim", strength=min(1.0, (self.mr.rsi_oversold - r + 10) / 30.0),
-            reasons=[f"rsi={r:.1f}<={self.mr.rsi_oversold}", "bb_lower_pierce", "reclaim"],
+            level_kind=lk, strength=strg, reasons=reasons,
             target_pct=target, requires_macro=self.requires_macro,
-            meta={"rsi": r, "bb_lower": lo_now},
+            meta={"rsi": r, "band": level},
         )
 
 
@@ -238,33 +251,32 @@ class TrendFollowStrategy(Strategy):
         self.min_bars = self.tr.ema_slow + 5
 
     def propose(self, symbol, tf, df, side=Side.LONG):
-        if side is not Side.LONG:
-            return None
         close = df["close"]
         ef = float(ema(close, self.tr.ema_fast).iloc[-1])
         em = float(ema(close, self.tr.ema_mid).iloc[-1])
         es = float(ema(close, self.tr.ema_slow).iloc[-1])
         if any(pd.isna(x) for x in (ef, em, es)):
             return None
-        stacked = ef > em > es
-        if not stacked:
-            return None
         price = float(close.iloc[-1])
-        # must be near (just above) the mid EMA — a pullback, not extended
         dist_pct = (price - em) / em * 100.0
-        if not (0.0 <= dist_pct <= self.tr.pullback_tolerance_pct + 0.5):
-            return None
-        level = em  # limit at the mid EMA
-        if not self._long_limit_ok(df, level, max_below_pct=self.tr.pullback_tolerance_pct + 1.0):
-            return None
-        slope = (es > float(ema(close, self.tr.ema_slow).iloc[-3])) if len(close) > 3 else True
-        if not slope:
+        tol = self.tr.pullback_tolerance_pct + 0.5
+        es_prev = float(ema(close, self.tr.ema_slow).iloc[-3]) if len(close) > 3 else es
+        if side is Side.LONG:
+            if not (ef > em > es and es >= es_prev and 0.0 <= dist_pct <= tol):
+                return None
+            lk = "ema_pullback"
+        else:
+            if not (ef < em < es and es <= es_prev and -tol <= dist_pct <= 0.0):
+                return None
+            lk = "ema_pullback_short"
+        level = em
+        if not self._limit_ok(df, level, side, self.tr.pullback_tolerance_pct + 1.0):
             return None
         target = self.cfg.target_for(tf) * self.tr.target_mult
         return StrategyProposal(
             strategy=self.name, side=side, level_price=level,
-            level_kind="ema_pullback", strength=0.8,
-            reasons=[f"ema{self.tr.ema_fast}>{self.tr.ema_mid}>{self.tr.ema_slow}",
+            level_kind=lk, strength=0.8,
+            reasons=[f"ema {self.tr.ema_fast}/{self.tr.ema_mid}/{self.tr.ema_slow} stacked",
                      f"pullback {dist_pct:.2f}%"],
             target_pct=target, requires_macro=self.requires_macro,
             meta={"ema_fast": ef, "ema_mid": em, "ema_slow": es},
@@ -292,34 +304,35 @@ class VolatilitySqueezeStrategy(Strategy):
         self.min_bars = max(self.sq.lookback, self.sq.bb_period + 10)
 
     def propose(self, symbol, tf, df, side=Side.LONG):
-        if side is not Side.LONG:
-            return None
         close = df["close"]
         lo, mid, up = bollinger(close, self.sq.bb_period, self.sq.bb_std)
-        bandwidth = (up - lo) / mid.replace(0.0, float("nan"))
-        bw = bandwidth.dropna()
+        bw = ((up - lo) / mid.replace(0.0, float("nan"))).dropna()
         if len(bw) < self.sq.bb_period + 5:
             return None
-        window = bw.tail(self.sq.lookback)
-        thresh = float(window.quantile(self.sq.squeeze_quantile))
-        # was the PRIOR bar in a squeeze (low bandwidth)?
-        prev_bw = float(bw.iloc[-2])
-        in_squeeze = prev_bw <= thresh
+        thresh = float(bw.tail(self.sq.lookback).quantile(self.sq.squeeze_quantile))
+        if float(bw.iloc[-2]) > thresh:                    # prior bar not in a squeeze
+            return None
         price = float(close.iloc[-1])
-        up_now = float(up.iloc[-1])
-        breakout = price > up_now
-        if not (in_squeeze and breakout):
-            return None
-        level = up_now * (1 - self.sq.retest_band_pct / 100.0)
-        if not self._long_limit_ok(df, level, max_below_pct=self.sq.retest_band_pct + 1.0):
-            return None
         target = self.cfg.target_for(tf) * self.sq.target_mult
+        if side is Side.LONG:
+            up_now = float(up.iloc[-1])
+            if not price > up_now:
+                return None
+            level = up_now * (1 - self.sq.retest_band_pct / 100.0)
+            reasons = [f"squeeze<=q{self.sq.squeeze_quantile}", f"break>{up_now:.6g}"]; lk = "squeeze_breakout"
+        else:
+            lo_now = float(lo.iloc[-1])
+            if not price < lo_now:
+                return None
+            level = lo_now * (1 + self.sq.retest_band_pct / 100.0)
+            reasons = [f"squeeze<=q{self.sq.squeeze_quantile}", f"break<{lo_now:.6g}"]; lk = "squeeze_breakdown"
+        if not self._limit_ok(df, level, side, self.sq.retest_band_pct + 1.0):
+            return None
         return StrategyProposal(
             strategy=self.name, side=side, level_price=level,
-            level_kind="squeeze_breakout", strength=0.75,
-            reasons=[f"squeeze<=q{self.sq.squeeze_quantile}", f"break>{up_now:.6g}"],
+            level_kind=lk, strength=0.75, reasons=reasons,
             target_pct=target, requires_macro=self.requires_macro,
-            meta={"bandwidth": prev_bw, "squeeze_thresh": thresh},
+            meta={"squeeze_thresh": thresh},
         )
 
 
@@ -344,8 +357,6 @@ class VwapReversionStrategy(Strategy):
         self.min_bars = self.window + 6
 
     def propose(self, symbol, tf, df, side=Side.LONG):
-        if side is not Side.LONG:
-            return None
         seg = df.tail(self.window)
         tp = (seg["high"] + seg["low"] + seg["close"]) / 3.0
         vol = seg["volume"].clip(lower=0.0)
@@ -354,22 +365,24 @@ class VwapReversionStrategy(Strategy):
             return None
         vwap = float((tp * vol).sum() / denom)
         price = float(df["close"].iloc[-1])
+        prev = float(df["close"].iloc[-2])
         dev = (price - vwap) / vwap * 100.0
-        if dev > -self.stretch_pct:                       # not stretched below VWAP
-            return None
-        if float(df["close"].iloc[-1]) <= float(df["close"].iloc[-2]):  # not turning up
-            return None
         r = float(rsi(df["close"], self.cfg.filters.rsi_period).iloc[-1])
-        if r > self.cfg.filters.rsi_overbought:
-            return None
+        if side is Side.LONG:
+            if dev > -self.stretch_pct or price <= prev or r > self.cfg.filters.rsi_overbought:
+                return None
+            reasons = [f"{dev:.2f}% below VWAP", f"rsi={r:.0f}", "turning up"]; lk = "vwap_reversion"
+        else:
+            if dev < self.stretch_pct or price >= prev or r < self.cfg.filters.rsi_oversold:
+                return None
+            reasons = [f"+{dev:.2f}% above VWAP", f"rsi={r:.0f}", "turning down"]; lk = "vwap_reversion_short"
         level = price
-        if not self._long_limit_ok(df, level, max_below_pct=2.0):
+        if not self._limit_ok(df, level, side, 2.0):
             return None
         return StrategyProposal(
             strategy=self.name, side=side, level_price=level,
-            level_kind="vwap_reversion", strength=min(1.0, abs(dev) / 3.0),
-            reasons=[f"{dev:.2f}% below VWAP", f"rsi={r:.0f}", "turning up"],
-            target_pct=self.cfg.target_for(tf), requires_macro=False,
+            level_kind=lk, strength=min(1.0, abs(dev) / 3.0),
+            reasons=reasons, target_pct=self.cfg.target_for(tf), requires_macro=False,
             meta={"vwap": vwap, "deviation_pct": dev},
         )
 
@@ -389,25 +402,28 @@ class LiquiditySweepStrategy(Strategy):
         self.min_bars = self.lookback + 4
 
     def propose(self, symbol, tf, df, side=Side.LONG):
-        if side is not Side.LONG:
-            return None
         window = df.iloc[-(self.lookback + 2):-2]
         if len(window) < 5:
             return None
-        swing_low = float(window["low"].min())
-        prev_low = float(df["low"].iloc[-2])
         price = float(df["close"].iloc[-1])
-        if not (prev_low < swing_low and price > swing_low):   # swept + reclaimed
-            return None
-        level = swing_low
-        if not self._long_limit_ok(df, level, max_below_pct=2.5):
+        if side is Side.LONG:
+            swing = float(window["low"].min())
+            if not (float(df["low"].iloc[-2]) < swing and price > swing):
+                return None
+            reasons = [f"swept low {swing:.6g}", "reclaimed up"]; lk = "sweep_reclaim"
+        else:
+            swing = float(window["high"].max())
+            if not (float(df["high"].iloc[-2]) > swing and price < swing):
+                return None
+            reasons = [f"swept high {swing:.6g}", "reclaimed down"]; lk = "sweep_reclaim_short"
+        level = swing
+        if not self._limit_ok(df, level, side, 2.5):
             return None
         return StrategyProposal(
             strategy=self.name, side=side, level_price=level,
-            level_kind="sweep_reclaim", strength=0.8,
-            reasons=[f"swept {swing_low:.6g}", "reclaimed"],
+            level_kind=lk, strength=0.8, reasons=reasons,
             target_pct=self.cfg.target_for(tf), requires_macro=False,
-            meta={"swing_low": swing_low},
+            meta={"swing": swing},
         )
 
 

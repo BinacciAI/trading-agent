@@ -21,6 +21,9 @@ class AgentContext:
     def __init__(self):
         self.scfg = StrategyConfig.load()
         self.rcfg = RuntimeConfig()
+        # Perps venue trades both directions; spot is long-only.
+        if self.rcfg.venue == "perps":
+            self.scfg.allow_shorts = True
         self.engine = ExecutionEngine(self.scfg, deposit_usd=self.rcfg.deposit_usd)
         self.orchestrator = Orchestrator(self.scfg, self.engine)
         from .live import LiveLoop
@@ -108,6 +111,7 @@ def build_app():
         return [{
             "symbol": t.position.symbol, "tf": t.position.timeframe.value,
             "strategy": t.position.meta.get("strategy", "reaction"),
+            "side": t.position.side.value,
             "pnl_usd": round(t.pnl_usd, 2), "reason": t.reason,
             "closed": t.position.closed_ts.isoformat() if t.position.closed_ts else None,
         } for t in ctx.engine.closed]

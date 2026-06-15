@@ -12,11 +12,11 @@ type Status = {
     universe?: { markets?: number; candidates: number } };
 };
 type Pos = {
-  symbol: string; tf: string; strategy?: string; level_kind?: string; state: string;
+  symbol: string; tf: string; side?: string; strategy?: string; level_kind?: string; state: string;
   avg_entry: number; notional_usd: number; gain_pct: number; peak_gain_pct: number;
   stop_pct: number | null; target_pct: number; averaging_done: number;
 };
-type Trade = { symbol: string; tf: string; strategy?: string; pnl_usd: number; reason: string; closed: string | null };
+type Trade = { symbol: string; tf: string; side?: string; strategy?: string; pnl_usd: number; reason: string; closed: string | null };
 type Trace = { symbol: string; tf: string; ts: string; strategy?: string; entered: boolean;
   gates: { step: string; passed: boolean; detail: string }[] };
 type Strat = { active: string[]; open_positions_by_strategy: Record<string, number>;
@@ -131,10 +131,11 @@ export default function Page() {
             <thead><tr><th>Market</th><th>Strategy</th><th>TF</th><th>State</th><th>Avg Entry</th><th>Size</th>
               <th>Gain</th><th>Peak</th><th>Stop</th><th>Target</th><th>Avg</th></tr></thead>
             <tbody>
-              {positions.length === 0 && <tr><td colSpan={11}>no open positions — agents watching, waiting for gate confirmation</td></tr>}
+              {positions.length === 0 && <tr><td colSpan={12}>no open positions — agents watching, waiting for gate confirmation</td></tr>}
               {positions.map((p, i) => (
                 <tr key={i}>
                   <td style={{ color: "var(--text-primary)", fontWeight: 600 }}>{p.symbol}/USDT</td>
+                  <td><Side s={p.side} /></td>
                   <td><span className="badge cyan">{sLabel(p.strategy)}</span></td>
                   <td className="num">{p.tf}</td>
                   <td><span className={p.state === "sl_in_profit" ? "badge green" : "badge gold"}>{p.state === "sl_in_profit" ? "LOCKED GREEN" : "ACTIVE"}</span></td>
@@ -174,12 +175,13 @@ export default function Page() {
         <h2 className="section">Closed Trades</h2>
         <div className="tbl-wrap">
           <table>
-            <thead><tr><th>Market</th><th>Strategy</th><th>TF</th><th>Exit</th><th>P/L</th><th>Closed</th></tr></thead>
+            <thead><tr><th>Market</th><th>Side</th><th>Strategy</th><th>TF</th><th>Exit</th><th>P/L</th><th>Closed</th></tr></thead>
             <tbody>
-              {trades.length === 0 && <tr><td colSpan={6}>no closed trades</td></tr>}
+              {trades.length === 0 && <tr><td colSpan={7}>no closed trades</td></tr>}
               {[...trades].reverse().slice(0, 20).map((t, i) => (
                 <tr key={i}>
                   <td style={{ color: "var(--text-primary)", fontWeight: 600 }}>{t.symbol}/USDT</td>
+                  <td><Side s={t.side} /></td>
                   <td><span className="badge cyan">{sLabel(t.strategy)}</span></td>
                   <td className="num">{t.tf}</td>
                   <td><span className={t.reason === "take_profit" ? "badge green" : t.reason === "kill_switch" || t.reason === "hard_stop" ? "badge red" : "badge cyan"}>{t.reason.replace(/_/g, " ").toUpperCase()}</span></td>

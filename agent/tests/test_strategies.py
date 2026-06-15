@@ -213,3 +213,27 @@ def test_macro_regime_classifier():
     assert classify_regime(risk_off)["regime"] == "risk_off"
     assert classify_regime(None)["regime"] == "unknown"
     assert regime_skill_manifest()["name"] == "binacci-macro-regime-classifier"
+
+
+def test_both_ways_when_shorts_enabled():
+    """With allow_shorts, the portfolio trades long AND short; short PnL signs
+    are correct (gain when price falls)."""
+    from binacci.backtest import run_backtest
+    from binacci.execution import ExecutionEngine
+    from binacci.models import EntrySignal, ReferencePoint, RefKind
+
+    src = SyntheticSource(seed=7)
+    cfg = StrategyConfig(); cfg.allow_shorts = True
+    r = run_backtest(cfg, src, "CAKE", Timeframe.M15, bars=800)
+    sides = {t["side"] for t in r.trade_log}
+    assert "short" in sides and "long" in sides
+
+    # short take-profit math: short at 100, price -> 99.5 = +0.5% gain
+    e = ExecutionEngine(StrategyConfig(), 1000.0)
+    ref = ReferencePoint("X", Timeframe.M15, RefKind.LOCAL_MAX, 101.0, _ts())
+    sig = EntrySignal(symbol="X", timeframe=Timeframe.M15, side=Side.SHORT,
+                      level_price=100.0, reference=ref, gates=[], ts=_ts(),
+                      target_pct=0.5, strategy="reaction")
+    p = e.open_from_signal(sig, 100.0, _ts())
+    t = e.on_price(p, 99.5, _ts())
+    assert t is not None and t.reason == "take_profit" and t.pnl_usd > 0
