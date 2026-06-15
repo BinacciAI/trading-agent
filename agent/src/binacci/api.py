@@ -384,6 +384,52 @@ def build_app():
         ok = not bool(res.get("error"))
         return {"ok": ok, "contract": ctx.rcfg.competition_contract, "result": res}
 
+    @app.get("/competition")
+    def competition():
+        """Track-1 competition readiness: registration, the 1-trade/day rule,
+        eligible-token coverage, and live-venue status."""
+        from datetime import datetime, timezone
+        from .venues import TwakCLI
+
+        now = datetime.now(timezone.utc)
+        today = now.date()
+        closed = ctx.engine.closed
+        trades_today = sum(1 for t in closed
+                           if t.position.closed_ts and t.position.closed_ts.date() == today)
+        opens_today = sum(1 for p in ctx.engine.positions
+                          if p.opened_ts and p.opened_ts.date() == today)
+        traded_syms = sorted({t.position.symbol for t in closed}
+                             | {p.symbol for p in ctx.engine.open_positions()})
+        twak = TwakCLI()
+        reg = {}
+        if twak.installed:
+            try:
+                reg = twak.compete_status()
+            except Exception as e:
+                reg = {"error": str(e)[:160]}
+        registered = bool(reg.get("registered") or reg.get("agentAddress") or reg.get("address"))
+        return {
+            "track": 1,
+            "contract": ctx.rcfg.competition_contract,
+            "explorer": f"https://bsctrace.com/address/{ctx.rcfg.competition_contract}",
+            "wallet": ctx.rcfg.wallet_address or None,
+            "registered": registered,
+            "registration": reg,
+            "twak_installed": twak.installed,
+            "eligible_tokens": len(ctx.scfg.symbols),
+            "markets_active": ctx.loop.status().get("markets", len(ctx.scfg.symbols)),
+            "min_trades_per_day": 1,
+            "trades_today": trades_today,
+            "opens_today": opens_today,
+            "activity_today": trades_today + opens_today,
+            "min_trade_met": (trades_today + opens_today) >= 1,
+            "total_trades": len(closed),
+            "symbols_traded": traded_syms[:60],
+            "venue": ctx.rcfg.venue,
+            "testnet": ctx.rcfg.use_testnet,
+            "live_trading": ctx.rcfg.venue != "paper" and not ctx.rcfg.use_testnet,
+        }
+
     @app.get("/regime")
     def regime():
         """Macro Regime Classifier (CMC-data skill) — live classification."""

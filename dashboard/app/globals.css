@@ -399,3 +399,70 @@ select option { background: var(--bg-panel); color: var(--text-primary); }
 .strip-pnl.neg { color: var(--loss); }
 
 @media (max-width: 760px) { .hero { flex-direction: column; } .hero-right { width: 100%; } .hero-eq { font-size: 34px; } }
+
+/* ============================================================
+   Bloomberg-grade refinements
+   ============================================================ */
+
+/* Aligned, tabular figures everywhere data is shown */
+.card .val, td.num, .vault .row .v, .strip-pnl, .hero-eq, .hero-sub,
+.num, .badge, .gate, select.sel { font-variant-numeric: tabular-nums; }
+
+/* Topbar: stack tag, tighter */
+.topbar { padding: 12px 22px; gap: 14px; }
+.topbar-tag {
+  margin-left: auto; font-family: var(--font-mono); font-size: 9px;
+  letter-spacing: 0.22em; color: var(--text-muted);
+  border: 1px solid var(--border-soft); border-radius: 6px; padding: 4px 10px;
+}
+
+/* Sidebar footer pinned to bottom */
+.nav-foot {
+  margin-top: auto; padding: 12px 12px 4px; font-family: var(--font-mono);
+  font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--text-muted); border-top: 1px solid var(--border-soft);
+}
+
+/* Section headers: a touch more presence + a hairline */
+h2.section {
+  display: flex; align-items: center; gap: 10px; font-size: 10.5px;
+}
+h2.section::after { content: ""; flex: 1; height: 1px;
+  background: linear-gradient(90deg, var(--border-soft), transparent); }
+.rail h2.section::after { display: none; }
+
+/* Cards: crisper border, calmer shadow */
+.card, .vault, .tbl-wrap, .chart-box, .strat-card {
+  box-shadow: 0 1px 0 rgba(255,255,255,0.02), 0 10px 30px rgba(0,0,0,0.22);
+}
+.card .val { font-size: 21px; }
+.val-sub { font-size: 13px; color: var(--text-muted); font-weight: 500; }
+
+/* Competition page */
+.comp-grid { display: grid; grid-template-columns: minmax(340px, 1.1fr) minmax(280px, 1fr); gap: 16px; }
+@media (max-width: 920px) { .comp-grid { grid-template-columns: 1fr; } }
+.comp-check {
+  background: var(--gradient-panel); border: 1px solid var(--border-gold);
+  border-radius: var(--radius-lg); padding: 18px; box-shadow: var(--shadow-card);
+}
+.cc-row { display: flex; gap: 12px; align-items: flex-start; padding: 11px 0;
+  border-bottom: 1px solid var(--border-soft); }
+.cc-row:last-of-type { border-bottom: none; }
+.cc-title { font-family: var(--font-display); font-weight: 600; font-size: 13.5px; color: var(--text-primary); }
+.cc-sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; line-height: 1.5; }
+.chk { flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; display: flex;
+  align-items: center; justify-content: center; font-size: 12px; font-weight: 700; margin-top: 1px; }
+.chk.done { background: rgba(24,200,120,0.14); color: var(--profit); border: 1px solid rgba(24,200,120,0.4); }
+.chk.pend { background: rgba(245,185,63,0.12); color: var(--brand-gold); border: 1px solid var(--border-gold); }
+.chk.todo { background: rgba(255,255,255,0.03); color: var(--text-muted); border: 1px solid var(--border-soft); }
+.cc-msg { font-family: var(--font-mono); font-size: 11px; color: var(--brand-cyan); margin-top: 10px; }
+.comp-side { display: flex; flex-direction: column; }
+
+/* Token chips */
+.chip-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+.tok-chip {
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em;
+  color: var(--text-secondary); background: var(--bg-card);
+  border: 1px solid var(--border-soft); border-radius: 5px; padding: 3px 8px;
+}
+.tok-chip:hover { border-color: var(--border-gold); color: var(--text-primary); }

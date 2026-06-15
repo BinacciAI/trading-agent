@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 
 const NAV = [
   { ic: "◈", label: "Command Center", href: "/" },
+  { ic: "🏁", label: "Competition", href: "/competition" },
   { ic: "⬡", label: "Agents", href: "/agents" },
   { ic: "↯", label: "Signals", href: "/signals" },
   { ic: "✦", label: "Execution Logs", href: "/logs" },
@@ -20,9 +21,10 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="shell">
       <header className="topbar">
-        <img src="/binacci-logo.png" alt="Binacci" width={34} height={34}
+        <img src="/binacci-logo.png" alt="Binacci" width={32} height={32}
              style={{ borderRadius: 8, border: "1px solid var(--border-gold)" }} />
         <div className="wordmark"><span className="b">BINACCI</span><span className="ai">AI</span></div>
+        <span className="topbar-tag">BNB · CMC · TRUST WALLET</span>
       </header>
       <div className="body">
         <nav className="sidebar">
@@ -33,6 +35,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
               <span className="ic">{n.ic}</span>{n.label}
             </Link>
           ))}
+          <div className="nav-foot">v0.2 · live on BSC</div>
         </nav>
         {children}
       </div>
