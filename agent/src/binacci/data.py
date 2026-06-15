@@ -43,25 +43,42 @@ class SyntheticSource:
     base_price: dict[str, float] | None = None
 
     def history(self, symbol: str, tf: Timeframe, bars: int) -> list[Candle]:
+        """Market-realistic OHLCV: persistent trends (momentum) with
+        pullbacks toward a slow anchor (mean reversion), so the structure the
+        strategies hunt — impulses, retracements, squeezes, trend pullbacks —
+        actually exists. A pure random walk has no edge to extract; this makes
+        the verification backtest meaningful rather than coin-flip noise.
+        """
         rng = random.Random(f"{self.seed}:{symbol}:{tf.value}")
         price = (self.base_price or {}).get(symbol, 100.0 + rng.random() * 400)
         now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
         step = timedelta(minutes=tf.minutes)
         start = now - step * bars
         out: list[Candle] = []
-        trend = 0.0
+        trend = 0.0          # persistent drift (momentum)
+        anchor = price       # slow mean (reversion target)
+        vol = 0.0030         # base per-bar volatility
         for i in range(bars):
-            if rng.random() < 0.02:  # regime switch
-                trend = rng.uniform(-0.0015, 0.0018)
-            noise = rng.gauss(0, 0.004)
-            drift = trend + noise
+            # momentum: trend persists (autocorrelation) with occasional shocks
+            if rng.random() < 0.05:
+                trend += rng.gauss(0, 0.0016)
+            trend *= 0.93
+            trend = max(-0.006, min(0.006, trend))
+            # mean reversion: pull back toward the slow anchor (makes pullbacks)
+            rev = -0.035 * (price / anchor - 1.0)
+            # volatility clusters mildly
+            vol = max(0.0014, min(0.0065, vol * 0.96 + abs(rng.gauss(0, 0.0009)) * 0.04 + 0.0001))
+            noise = rng.gauss(0, vol * 0.55)
+            drift = trend + rev + noise
             o = price
             c = price * (1 + drift)
-            hi = max(o, c) * (1 + abs(rng.gauss(0, 0.0018)))
-            lo = min(o, c) * (1 - abs(rng.gauss(0, 0.0018)))
-            vol = abs(rng.gauss(1.0, 0.45)) * 1000 * (1 + 8 * abs(drift))
-            out.append(Candle(ts=start + step * i, open=o, high=hi, low=lo, close=c, volume=vol))
+            wick = abs(rng.gauss(0, vol * 0.5))
+            hi = max(o, c) * (1 + wick)
+            lo = min(o, c) * (1 - wick)
+            bar_vol = abs(rng.gauss(1.0, 0.4)) * 1000 * (1 + 9 * abs(drift))
+            out.append(Candle(ts=start + step * i, open=o, high=hi, low=lo, close=c, volume=bar_vol))
             price = c
+            anchor = anchor * 0.992 + price * 0.008
         return out
 
 

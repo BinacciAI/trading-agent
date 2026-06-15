@@ -46,14 +46,24 @@ class BacktestResult:
     trade_log: list[dict] = field(default_factory=list)
 
     def summary(self) -> dict:
+        import math
+
+        def fin(x: float, cap: float = 999.99) -> float:
+            # JSON has no inf/nan — cap so the spec/API always serializes.
+            if x is None or math.isnan(x):
+                return 0.0
+            if math.isinf(x):
+                return cap if x > 0 else -cap
+            return x
+
         return {
             "symbol": self.symbol, "timeframe": self.timeframe.value, "bars": self.bars,
-            "trades": self.trades, "win_rate_pct": round(self.win_rate_pct, 1),
-            "total_pnl_usd": round(self.total_pnl_usd, 2),
-            "return_pct": round(self.return_pct, 2),
-            "max_drawdown_pct": round(self.max_drawdown_pct, 2),
-            "profit_factor": round(self.profit_factor, 2),
-            "sharpe": round(self.sharpe, 2),
+            "trades": self.trades, "win_rate_pct": round(fin(self.win_rate_pct), 1),
+            "total_pnl_usd": round(fin(self.total_pnl_usd), 2),
+            "return_pct": round(fin(self.return_pct), 2),
+            "max_drawdown_pct": round(fin(self.max_drawdown_pct), 2),
+            "profit_factor": round(fin(self.profit_factor), 2),
+            "sharpe": round(fin(self.sharpe), 2),
             "kill_switch_fired": self.kill_switch_fired,
             "close_reasons": self.close_reasons,
         }

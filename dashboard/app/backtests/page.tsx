@@ -14,15 +14,27 @@ const SYMBOLS = ["BNB", "CAKE", "ETH", "XVS", "FLOKI", "TWT", "DOGE", "PEPE", "I
 const TFS = ["3m", "10m", "15m", "30m", "4h"];
 const STRATS = ["portfolio", "reaction", "momentum_breakout", "mean_reversion", "trend_follow", "volatility_squeeze"];
 
-function Spark({ data }: { data: number[] }) {
+function Equity({ data }: { data: number[] }) {
   if (!data || data.length < 2) return null;
-  const w = 520, h = 90, min = Math.min(...data), max = Math.max(...data);
+  const w = 760, h = 150, pad = 4;
+  const min = Math.min(...data), max = Math.max(...data);
   const rng = max - min || 1;
-  const pts = data.map((v, i) => `${(i / (data.length - 1)) * w},${h - ((v - min) / rng) * h}`).join(" ");
+  const x = (i: number) => (i / (data.length - 1)) * w;
+  const y = (v: number) => pad + (1 - (v - min) / rng) * (h - pad * 2);
+  const line = data.map((v, i) => `${x(i)},${y(v)}`).join(" ");
+  const area = `0,${h} ${line} ${w},${h}`;
   const up = data[data.length - 1] >= data[0];
+  const col = up ? "var(--profit)" : "var(--loss)";
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 90 }} preserveAspectRatio="none">
-      <polyline points={pts} fill="none" stroke={up ? "var(--profit)" : "var(--loss)"} strokeWidth={2} />
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 150, display: "block" }} preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="eq" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={up ? "rgba(24,200,120,0.28)" : "rgba(255,77,77,0.26)"} />
+          <stop offset="100%" stopColor="rgba(0,0,0,0)" />
+        </linearGradient>
+      </defs>
+      <polygon points={area} fill="url(#eq)" />
+      <polyline points={line} fill="none" stroke={col} strokeWidth={2} vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }
@@ -31,7 +43,7 @@ export default function Backtests() {
   const [symbol, setSymbol] = useState("BNB");
   const [tf, setTf] = useState("15m");
   const [strat, setStrat] = useState("portfolio");
-  const [bars, setBars] = useState(800);
+  const [bars, setBars] = useState("800");
   const [res, setRes] = useState<BT | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -42,34 +54,34 @@ export default function Backtests() {
       const r = await fetch(`/agent/backtest?symbol=${symbol}&timeframe=${tf}&strategy=${strat}&bars=${bars}`);
       if (!r.ok) throw new Error(String(r.status));
       setRes(await r.json());
-    } catch (e: any) { setErr("agent offline or backtest failed"); }
+    } catch { setErr("agent offline or backtest failed"); }
     setBusy(false);
   };
   useEffect(() => { run(); /* eslint-disable-next-line */ }, []);
 
-  const sel = (val: string, set: (v: string) => void, opts: string[]) => (
-    <select value={val} onChange={(e) => set(e.target.value)}
-            style={{ background: "var(--bg-card)", color: "var(--text-primary)",
-                     border: "1px solid var(--border-soft)", borderRadius: 8, padding: "8px 10px",
-                     fontFamily: "var(--font-mono)", fontSize: 13 }}>
-      {opts.map((o) => <option key={o} value={o}>{o.replace(/_/g, " ")}</option>)}
-    </select>
+  const field = (label: string, val: string, set: (v: string) => void, opts: string[]) => (
+    <div className="sel-wrap">
+      <span className="sel-lbl">{label}</span>
+      <select className="sel" value={val} onChange={(e) => set(e.target.value)}>
+        {opts.map((o) => <option key={o} value={o}>{o.replace(/_/g, " ")}</option>)}
+      </select>
+    </div>
   );
 
   return (
     <main className="main">
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+      <div className="toolbar">
         <span className="badge gold">VERIFICATION BACKTESTS</span>
         <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
           Same engine as the live agent — a spec's backtest is exactly what Binacci would have done.</span>
       </div>
 
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 18 }}>
-        {sel(symbol, setSymbol, SYMBOLS)}
-        {sel(tf, setTf, TFS)}
-        {sel(strat, setStrat, STRATS)}
-        {sel(String(bars), (v) => setBars(Number(v)), ["500", "800", "1200", "1500"])}
-        <button className="btn btn-primary" onClick={run} disabled={busy}>
+      <div className="toolbar" style={{ alignItems: "flex-end" }}>
+        {field("Market", symbol, setSymbol, SYMBOLS)}
+        {field("Timeframe", tf, setTf, TFS)}
+        {field("Strategy", strat, setStrat, STRATS)}
+        {field("Bars", bars, setBars, ["500", "800", "1200", "1500"])}
+        <button className="btn btn-primary" onClick={run} disabled={busy} style={{ height: 36 }}>
           {busy ? "Running…" : "▶ Run Backtest"}</button>
         {err && <span className="badge red">{err}</span>}
       </div>
@@ -82,12 +94,13 @@ export default function Backtests() {
             <div className="card"><div className="lbl">Return</div>
               <div className={res.return_pct >= 0 ? "val pos" : "val neg"}>{res.return_pct >= 0 ? "+" : ""}{fmt(res.return_pct)}%</div></div>
             <div className="card"><div className="lbl">Max Drawdown</div><div className="val">{fmt(res.max_drawdown_pct)}%</div></div>
-            <div className="card"><div className="lbl">Profit Factor</div><div className="val cyan">{fmt(res.profit_factor)}</div></div>
+            <div className="card"><div className="lbl">Profit Factor</div>
+              <div className="val cyan">{res.profit_factor > 99 ? "∞" : fmt(res.profit_factor)}</div></div>
             <div className="card"><div className="lbl">Sharpe</div><div className="val">{fmt(res.sharpe)}</div></div>
           </div>
 
           <h2 className="section">Equity Curve</h2>
-          <div className="card"><Spark data={res.equity_curve} /></div>
+          <div className="chart-box"><Equity data={res.equity_curve} /></div>
 
           <h2 className="section">Exit Reasons</h2>
           <div className="vault" style={{ maxWidth: 520 }}>

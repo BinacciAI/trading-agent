@@ -161,6 +161,16 @@ class ExecutionEngine:
         if gain >= pos.target_pct:
             return self._close(pos, price, ts, reason="take_profit")
 
+        # catastrophic per-position stop — caps the tail loser so a handful
+        # of averaged-down losers can't erase many small wins. Only relevant
+        # once averaging is exhausted (the engine still tries to average at a
+        # level first); fires only while the position never armed the trailing.
+        hs = self.cfg.risk.hard_stop_pct
+        if (hs and pos.stop_pct is None
+                and pos.averaging_done >= len(self.cfg.margin.averaging_multipliers)
+                and gain <= -hs):
+            return self._close(pos, price, ts, reason="hard_stop")
+
         # trailing ladder
         stop = self.cfg.trailing.stop_for(pos.peak_gain_pct)
         if stop is not None:

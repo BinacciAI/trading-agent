@@ -134,6 +134,13 @@ class RiskLimits(BaseModel):
     #: Smart slot return: positions whose SL is already in profit are counted
     #: as "effectively closed" and release their slot.
     sl_in_profit_releases_slot: bool = True
+    #: Per-position catastrophic stop: max adverse excursion (% from avg
+    #: entry) before a single position is force-closed, EVEN if it never
+    #: turned green. Without this, a position that goes straight against the
+    #: entry has no stop until the aggregate kill switch — so a few averaged
+    #: losers can erase many small wins (high win-rate, negative expectancy).
+    #: Capping the tail loser is what makes the book net-positive. 0 disables.
+    hard_stop_pct: float = 2.0
 
 
 class RiskMode(str, Enum):
@@ -427,18 +434,4 @@ class RuntimeConfig(BaseSettings):
     warmup_backfill: bool = True
     warmup_backfill_bars: int = 320
     #: Liquidity verification: "auto" (verify when twak is installed),
-    #: "true", or "false". Unverified symbols never reach the live venue.
-    verify_liquidity: str = "auto"
-    #: Drop candidates whose $1 test-quote price impact exceeds this (%).
-    max_price_impact_pct: float = 1.0
-
-    # Trust Wallet Agent Kit / chain
-    twak_endpoint: str = ""
-    bsc_rpc: str = "https://bsc-dataseed.bnbchain.org"
-    bsc_testnet_rpc: str = "https://data-seed-prebsc-1-s1.bnbchain.org:8545"
-    wallet_address: str = ""
-    use_testnet: bool = True
-
-    # Agent API server
-    api_host: str = "0.0.0.0"
-    api_port: int = 8000
+    #: "true", or "false". Unverified symbols never reach the live

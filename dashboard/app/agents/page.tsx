@@ -6,7 +6,7 @@ type Status = {
   kill_switch_fired: boolean;
   loop?: {
     running: boolean; polls: number; last_poll: string | null;
-    macro_fresh: boolean; venue: string;
+    macro_fresh: boolean; venue: string; markets?: number;
     warmup?: { tradable_tfs: string[]; one_minute_bars: Record<string, number> };
     universe?: { candidates: number; verified_count: number | null };
   };
@@ -29,12 +29,12 @@ export default function Agents() {
     <main className="main">
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
         <span className={running ? "badge green" : "badge gray"}>{running ? "ALL SYSTEMS ACTIVE" : "STANDBY"}</span>
-        <span className="badge cyan">{loop?.universe?.verified_count ?? loop?.universe?.candidates ?? "—"} MARKETS</span>
-        <span className="badge gold">{loop?.warmup?.tradable_tfs?.length ?? 0}/4 TIMEFRAMES WARM</span>
+        <span className="badge cyan">{loop?.markets ?? loop?.universe?.candidates ?? "—"} MARKETS</span>
+        <span className="badge gold">{loop?.warmup?.tradable_tfs?.length ?? 0} TIMEFRAMES WARM</span>
       </div>
 
       <h2 className="section">Analysis Agents — 5 Simulations</h2>
-      <div className="cards" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(290px, 1fr))" }}>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(290px, 1fr))" }}>
         {SIMS.map((s) => (
           <div key={s.code} className="card">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>

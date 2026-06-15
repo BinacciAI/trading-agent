@@ -20,47 +20,47 @@ export default function StrategiesPage() {
 
   return (
     <main className="main">
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+      <div className="toolbar">
         <span className={live ? "badge green" : "badge gray"}>{live ? "LIVE" : "OFFLINE"}</span>
         <span className="badge gold">{active.size} STRATEGIES ACTIVE</span>
       </div>
 
       <h2 className="section">Strategy Portfolio</h2>
-      <p style={{ fontSize: 12.5, color: "var(--text-secondary)", lineHeight: 1.7, maxWidth: 760, marginBottom: 18 }}>
+      <p className="lede" style={{ marginBottom: 18 }}>
         Binacci runs a portfolio of orthogonal strategies over every market and timeframe at once.
         Each is an independent opinion that still feeds the same deterministic risk engine — more
         independent reasons to be in a market, with the slot cap and kill switch bounding total
         exposure. Positions are unique per (market, timeframe, strategy), so the strategies never collide.
       </p>
 
-      <div className="cards" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
-        {cat.length === 0 && <div className="card"><div className="lbl">Loading…</div></div>}
+      <div className="strat-grid">
+        {cat.length === 0 && <div className="strat-card"><div className="sc-title">Loading…</div></div>}
         {cat.map((s) => {
           const open = data?.open_positions_by_strategy?.[s.strategy] ?? 0;
           const pnl = data?.realized_pnl_by_strategy?.[s.strategy] ?? 0;
           const on = active.has(s.strategy);
           return (
-            <div key={s.strategy} className="card" style={{ opacity: on ? 1 : 0.5,
-                 borderColor: on ? "var(--border-gold)" : "var(--border-soft)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div className="lbl" style={{ color: "var(--text-primary)", fontSize: 14 }}>{s.title}</div>
+            <div key={s.strategy} className="strat-card"
+                 style={{ opacity: on ? 1 : 0.55, borderColor: on ? "var(--border-gold)" : "var(--border-soft)" }}>
+              <div className="sc-head">
+                <div className="sc-title">{s.title}</div>
                 <span className={on ? "badge green" : "badge gray"}>{on ? "ON" : "OFF"}</span>
               </div>
-              <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6, marginTop: 8, minHeight: 54 }}>
-                {s.entry_logic}
-              </p>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 5, margin: "8px 0" }}>
+              <p className="sc-desc">{s.entry_logic}</p>
+              <div className="sc-chips">
                 {s.gates.map((g, i) => <span key={i} className="gate ok">{g.replace(/_/g, " ")}</span>)}
               </div>
-              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+              <div className="sc-tags">
                 <span className={s.requires_macro ? "badge gold" : "badge cyan"}>
-                  {s.requires_macro ? "macro-gated" : "counter-trend (no macro)"}</span>
+                  {s.requires_macro ? "macro-gated" : "counter-trend"}</span>
               </div>
-              <div className="vault" style={{ padding: "10px 12px" }}>
-                <div className="row"><span>Open positions</span><span className="v">{open}</span></div>
-                <div className="row"><span>Realized P/L</span>
-                  <span className={pnl >= 0 ? "v" : "v danger"}>{pnl >= 0 ? "+" : ""}{fmt(pnl)} USD</span></div>
-                <div className="row"><span>Track-2 skill</span><span className="v" style={{ fontSize: 11 }}>{s.skill}</span></div>
+              <div className="sc-foot">
+                <div className="vault" style={{ padding: "10px 13px" }}>
+                  <div className="row"><span>Open positions</span><span className="v">{open}</span></div>
+                  <div className="row"><span>Realized P/L</span>
+                    <span className={pnl >= 0 ? "v" : "v danger"}>{pnl >= 0 ? "+" : ""}{fmt(pnl)} USD</span></div>
+                  <div className="row"><span>Track-2 skill</span><span className="v" style={{ fontSize: 10.5 }}>{s.skill}</span></div>
+                </div>
               </div>
             </div>
           );
@@ -68,13 +68,13 @@ export default function StrategiesPage() {
       </div>
 
       <h2 className="section">Shared Risk Engine</h2>
-      <div className="vault" style={{ maxWidth: 720, borderColor: "var(--border-cyan)" }}>
-        <p style={{ fontSize: 12.5, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+      <div className="vault" style={{ maxWidth: 760, borderColor: "var(--border-cyan)" }}>
+        <p className="lede">
           Every strategy obeys the house invariant: entries are limits at a concrete level, never a
           market chase. Whatever a strategy proposes, the deterministic engine sizes it (30/70 margin,
-          ~per-mode position cap), averages only at a level while in drawdown (x4 then x2), trails the
-          stop into profit, and force-flattens everything if aggregate floating drawdown hits the kill
-          switch. The AI proposes; the engine disposes.
+          per-mode position cap), averages only at a level while in drawdown (x4 then x2), trails the
+          stop into profit, caps the tail loser with a hard per-position stop, and force-flattens
+          everything if aggregate floating drawdown hits the kill switch. The AI proposes; the engine disposes.
         </p>
       </div>
     </main>

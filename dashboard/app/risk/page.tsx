@@ -24,7 +24,7 @@ export default function Risk() {
       </div>
 
       <h2 className="section">Hard Limits — Enforced in Code, Not Prompts</h2>
-      <div className="cards" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))" }}>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))" }}>
         <div className="card">
           <div className="lbl">Reserved Margin</div>
           <div className="val gold">Held</div>
