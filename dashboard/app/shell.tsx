@@ -10,9 +10,9 @@ const NAV = [
   { ic: "✦", label: "Execution Logs", href: "/logs" },
   { ic: "🜲", label: "Risk Vault", href: "/risk" },
   { ic: "❖", label: "Market Memory", href: "/memory" },
-  { ic: "𝌆", label: "Strategies", href: "" },
-  { ic: "⟲", label: "Backtests", href: "" },
-  { ic: "⚙", label: "Settings", href: "" },
+  { ic: "𝌆", label: "Strategies", href: "/strategies" },
+  { ic: "⟲", label: "Backtests", href: "/backtests" },
+  { ic: "⚙", label: "Settings", href: "/settings" },
 ];
 
 export default function Shell({ children }: { children: React.ReactNode }) {
@@ -27,19 +27,12 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       <div className="body">
         <nav className="sidebar">
           <div className="nav-label">Navigate</div>
-          {NAV.map((n) =>
-            n.href ? (
-              <Link key={n.label} href={n.href}
-                    className={path === n.href ? "nav-item active" : "nav-item"}>
-                <span className="ic">{n.ic}</span>{n.label}
-              </Link>
-            ) : (
-              <div key={n.label} className="nav-item">
-                <span className="ic">{n.ic}</span>{n.label}
-                <span className="soon">soon</span>
-              </div>
-            )
-          )}
+          {NAV.map((n) => (
+            <Link key={n.label} href={n.href}
+                  className={path === n.href ? "nav-item active" : "nav-item"}>
+              <span className="ic">{n.ic}</span>{n.label}
+            </Link>
+          ))}
         </nav>
         {children}
       </div>

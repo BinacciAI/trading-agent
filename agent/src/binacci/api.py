@@ -1,18 +1,4 @@
-"""FastAPI status server — feeds the dashboard and external monitors.
-
-Endpoints:
-* GET /status      — account snapshot + live-loop health
-* GET /positions   — open positions with live gain/SL state
-* GET /trades      — closed trade log
-* GET /traces      — recent decision traces (the 5-gate audit trail)
-* GET /spec        — generate a Track 2 strategy spec on demand
-* GET /manifest    — CMC Skills Marketplace manifest
-* GET /health      — liveness
-
-On startup, if BINACCI_CMC_API_KEY is set, the live loop starts: it polls
-CMC quotes, builds candles, refreshes the macro gate, runs the 5-gate
-evaluations, and executes on the configured venue (paper by default).
-"""
+"""FastAPI status server — feeds the dashboard and external monitors."""
 
 from __future__ import annotations
 
@@ -70,9 +56,9 @@ def build_app():
         yield
         task.cancel()
 
-    app = FastAPI(title="Binacci Agent", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Binacci Agent", version="0.2.0", lifespan=lifespan)
     app.add_middleware(
-        CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"],
+        CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"],
     )
 
     @app.get("/health")
@@ -127,6 +113,58 @@ def build_app():
             })
         return out
 
+    @app.get("/config")
+    def config():
+        """Operational settings for the Settings page (no secrets)."""
+        from .config import RiskMode
+
+        return {
+            "venue": ctx.rcfg.venue,
+            "use_testnet": ctx.rcfg.use_testnet,
+            "deposit_usd": ctx.rcfg.deposit_usd,
+            "poll_seconds": ctx.rcfg.poll_seconds,
+            "macro_refresh_seconds": ctx.rcfg.macro_refresh_seconds,
+            "fear_greed_refresh_seconds": ctx.rcfg.fear_greed_refresh_seconds,
+            "poll_only_verified": ctx.rcfg.poll_only_verified,
+            "warmup_backfill": ctx.rcfg.warmup_backfill,
+            "quote": ctx.scfg.quote,
+            "live_timeframes": [tf.value for tf in ctx.loop.live_tfs],
+            "risk": ctx.scfg.risk_summary(),
+            "risk_modes": [m.value for m in RiskMode],
+            "credits": ctx.loop.credit_estimate(),
+            "cmc_key_set": bool(ctx.rcfg.cmc_api_key),
+        }
+
+    @app.post("/risk/mode")
+    def set_risk_mode(mode: str):
+        """Switch the live risk preset (conservative|balanced|aggressive)."""
+        from .config import RiskMode
+
+        try:
+            rm = RiskMode(mode.lower())
+        except ValueError:
+            return {"ok": False, "error": f"unknown mode {mode!r}",
+                    "modes": [m.value for m in RiskMode]}
+        ctx.scfg.apply_risk_mode(rm)  # ctx.engine.cfg is the same object
+        return {"ok": True, "risk": ctx.scfg.risk_summary()}
+
+    @app.get("/backtest")
+    def backtest(symbol: str = "BNB", timeframe: str = "15m",
+                 strategy: str = "portfolio", bars: int = 800):
+        """On-demand verification backtest for the Backtests page."""
+        from .backtest import run_backtest
+        from .skill import _config_for
+
+        bars = max(300, min(int(bars), 1500))
+        cfg = ctx.scfg if strategy == "portfolio" else _config_for(strategy, ctx.scfg)
+        res = run_backtest(cfg, SyntheticSource(), symbol.upper(),
+                           Timeframe(timeframe), bars=bars, deposit_usd=ctx.rcfg.deposit_usd)
+        out = res.summary()
+        out["strategy"] = strategy
+        step = max(1, len(res.equity_curve) // 120)
+        out["equity_curve"] = [round(x, 2) for x in res.equity_curve[::step]]
+        return out
+
     @app.get("/strategies")
     def strategies():
         """The active strategy portfolio and per-strategy live stats."""
@@ -175,7 +213,7 @@ def build_app():
 
     @app.get("/signals")
     def signals():
-        """Pending limit entries — levels parked by SimB awaiting a touch."""
+        """Pending limit entries — levels parked awaiting a touch."""
         return [{
             "symbol": p.signal.symbol, "tf": p.signal.timeframe.value,
             "side": p.signal.side.value, "strategy": p.signal.strategy,
@@ -208,14 +246,7 @@ def build_app():
 
     @app.get("/x402")
     def x402_info():
-        """x402 monetization descriptor (L1 optional layer).
-
-        Strategy specs are free during hackathon judging. Production
-        monetization is dual-rail: APEX (ERC-8183) escrowed jobs at /apex
-        for verifiable deliverables, and x402 pay-per-call (settled on BSC,
-        EIP-3009 USDT/USDC) for low-latency spec pulls. Agents can pay this
-        endpoint family via `twak x402 request`.
-        """
+        """x402 monetization descriptor (L1 optional layer)."""
         return {
             "protocol": "x402",
             "status": "free_during_hackathon",
@@ -226,7 +257,7 @@ def build_app():
                          "transfer_methods": ["eip3009", "permit2-exact"],
                          "pay_to": ctx.rcfg.wallet_address or "set BINACCI_WALLET_ADDRESS"},
             },
-            "resource": {"url": "/spec", "description": "Backtestable reaction-strategy spec",
+            "resource": {"url": "/spec", "description": "Backtestable strategy spec",
                          "mimeType": "application/json"},
         }
 

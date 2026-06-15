@@ -136,6 +136,30 @@ class RiskLimits(BaseModel):
     sl_in_profit_releases_slot: bool = True
 
 
+class RiskMode(str, Enum):
+    """Named risk presets. They scale the NUMBER of concurrent positions and
+    the per-entry size *together*, so a wider book stays just as conservative:
+    more markets held at once, each a proportionally smaller slice, the same
+    30% aggregate-drawdown kill switch and 30% reserve underneath. 'More
+    positions' is diversification, not more risk."""
+
+    CONSERVATIVE = "conservative"
+    BALANCED = "balanced"
+    AGGRESSIVE = "aggressive"
+    #: Use whatever RiskLimits/MarginModel already say (no preset applied).
+    CUSTOM = "custom"
+
+
+#: mode -> (max_positions, entry_pct_of_working). entry shrinks as slots grow
+#: so the MAX fully-averaged deployed capital stays within the 70% working
+#: margin: positions * (entry_pct_of_working * 0.7 * 8) <= ~0.70.
+RISK_PRESETS: dict[RiskMode, dict] = {
+    RiskMode.CONSERVATIVE: {"max_positions": 15, "entry_pct_of_working": 0.0050},
+    RiskMode.BALANCED:     {"max_positions": 30, "entry_pct_of_working": 0.0035},
+    RiskMode.AGGRESSIVE:   {"max_positions": 50, "entry_pct_of_working": 0.0025},
+}
+
+
 class FilterConfig(BaseModel):
     """Entry filters (SimA confirmation set + macro gate)."""
 
@@ -316,6 +340,11 @@ class StrategyConfig(BaseSettings):
     #: Long-only by default (spot venue); perps venue may enable shorts.
     allow_shorts: bool = False
 
+    #: Named risk preset. Applied by :meth:`load` (and the runtime switcher),
+    #: NOT by the bare constructor — so unit tests keep the raw defaults.
+    #: Override at boot: BINACCI_RISK_MODE=conservative|balanced|aggressive.
+    risk_mode: RiskMode = RiskMode.BALANCED
+
     @classmethod
     def from_yaml(cls, path: str | Path) -> "StrategyConfig":
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
@@ -326,13 +355,38 @@ class StrategyConfig(BaseSettings):
         """Production loader: if ``BINACCI_STRATEGY_FILE`` points at a private
         overlay YAML, merge it over the illustrative defaults. The private
         overlay (and the proprietary CMD implementation) live outside the
-        public repo."""
+        public repo. The configured risk preset is applied here (not in the
+        bare constructor)."""
         import os
 
         path = os.environ.get("BINACCI_STRATEGY_FILE", "")
-        if path and Path(path).exists():
-            return cls.from_yaml(path)
-        return cls()
+        cfg = cls.from_yaml(path) if (path and Path(path).exists()) else cls()
+        cfg.apply_risk_mode(cfg.risk_mode)
+        return cfg
+
+    def apply_risk_mode(self, mode: RiskMode | str) -> "StrategyConfig":
+        """Apply a named risk preset: scales slot count and per-entry size
+        together so aggregate exposure stays bounded. ``custom`` is a no-op."""
+        mode = RiskMode(mode)
+        self.risk_mode = mode
+        preset = RISK_PRESETS.get(mode)
+        if preset:
+            self.risk.max_positions = preset["max_positions"]
+            self.margin.entry_pct_of_working = preset["entry_pct_of_working"]
+        return self
+
+    def risk_summary(self) -> dict:
+        """Human-readable snapshot of the active risk envelope."""
+        cap = self.margin.position_cap_pct()
+        return {
+            "risk_mode": self.risk_mode.value,
+            "max_positions": self.risk.max_positions,
+            "reserve_pct": self.margin.reserve_pct,
+            "entry_pct_of_deposit": round(self.margin.entry_pct_of_deposit, 5),
+            "position_cap_pct_of_deposit": round(cap, 5),
+            "max_deployed_pct_of_deposit": round(cap * self.risk.max_positions, 4),
+            "aggregate_drawdown_kill_pct": self.risk.max_aggregate_drawdown_pct,
+        }
 
     def target_for(self, tf: Timeframe) -> float:
         return self.targets_pct.get(tf, DEFAULT_TARGETS[tf])
@@ -363,13 +417,13 @@ class RuntimeConfig(BaseSettings):
     #: rarely. Set 0 to disable the F&G call entirely.
     fear_greed_refresh_seconds: int = 3600
     #: Only poll CMC quotes for liquidity-VERIFIED symbols once verification
-    #: completes. Stops paying for quotes on coins that can never trade — the
-    #: single biggest source of wasted CMC credits.
+    #: completes (live venues only). Stops paying for quotes on coins that can
+    #: never trade — the single biggest source of wasted CMC credits. Paper
+    #: mode always analyses the full universe.
     poll_only_verified: bool = True
     #: Best-effort: on boot, backfill historical OHLCV from CMC so references
     #: exist immediately instead of warming up over many hours from live
-    #: ticks. Silently falls back to live accumulation if the plan/endpoint
-    #: is unavailable.
+    #: ticks. Silently falls back to live accumulation if unavailable.
     warmup_backfill: bool = True
     warmup_backfill_bars: int = 320
     #: Liquidity verification: "auto" (verify when twak is installed),

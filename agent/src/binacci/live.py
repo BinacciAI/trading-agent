@@ -208,9 +208,15 @@ class LiveLoop:
         return self.started_at is not None
 
     def poll_symbols(self) -> list[str]:
-        """Symbols to actually request quotes for. Once verification has run,
-        and poll_only_verified is set, we stop paying CMC credits for coins
-        that can never trade — the single biggest source of wasted credits."""
+        """Symbols to actually request quotes for = the ANALYSIS universe.
+
+        In paper mode there is no on-chain execution, so liquidity
+        verification must NOT narrow what we analyze — we watch all candidates
+        (that's how the agent runs 50+ markets). Only on a real execution
+        venue do we restrict polling to liquidity-verified symbols, and only
+        to save CMC credits on coins that could never fill on-chain."""
+        if self.rcfg.venue == "paper":
+            return list(self.scfg.symbols)
         if (self.rcfg.poll_only_verified and self.verified is not None
                 and len(self.verified) > 0):
             return [s for s in self.scfg.symbols if s in self.verified]
@@ -258,8 +264,12 @@ class LiveLoop:
             "venue": self.rcfg.venue,
             "venue_log_tail": self.venue_log[-5:],
             "strategies": [s.name for s in self.orch.strategies],
+            "risk_mode": self.scfg.risk_mode.value,
+            "risk": self.scfg.risk_summary(),
+            "markets": len(self.poll_symbols()),
             "universe": {
                 "candidates": len(self.scfg.symbols),
+                "markets": len(self.poll_symbols()),
                 "polled": len(self.poll_symbols()),
                 "verified": sorted(self.verified) if self.verified is not None else None,
                 "verified_count": len(self.verified) if self.verified is not None else None,
@@ -297,6 +307,10 @@ class LiveLoop:
     def _should_verify(self) -> bool:
         mode = self.rcfg.verify_liquidity.lower()
         if mode == "false":
+            return False
+        # Paper mode never executes on-chain, so there's nothing to gate on
+        # liquidity — skip verification entirely (and analyze every symbol).
+        if self.rcfg.venue == "paper" and mode == "auto":
             return False
         from .venues import TwakCLI
 
@@ -444,20 +458,4 @@ class LiveLoop:
                 self.macro = None
 
         # 3) on each completed 1m bar, check TF boundaries
-        need = self._min_bars_needed()
-        prices = dict(self.prices)
-        for sym in completed:
-            builder = self.builders[sym]
-            for tf in self.live_tfs:
-                bars = builder.resample(tf)
-                if len(bars) < need:
-                    continue
-                newest = bars[-1]
-                key = (sym, tf.value)
-                if self._emitted.get(key) == newest.ts:
-                    continue  # no new completed bar on this TF
-                self._emitted[key] = newest.ts
-                df = to_dataframe(bars[-400:])
-                self.orch.update_references(sym, tf, df)
-                self.orch.evaluate(sym, tf, df, ts=newest.ts)
-                self.orch.on_candle(sym, tf, newest, prices)
+        need = self._min_b
