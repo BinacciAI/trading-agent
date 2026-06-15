@@ -134,14 +134,18 @@ class CMCClient:
         syms = list(symbols)
         if not syms:
             return {}
-        r = self._client.get(
-            "/v2/cryptocurrency/quotes/latest",
-            params={"symbol": ",".join(syms), "convert": convert,
-                    "skip_invalid": "true"},
-        )
-        r.raise_for_status()
-        data = r.json()["data"]
         out: dict[str, dict] = {}
+        # CMC caps a quotes call at 100 symbols — batch so a 100+ universe works.
+        data: dict = {}
+        for i in range(0, len(syms), 100):
+            chunk = syms[i:i + 100]
+            r = self._client.get(
+                "/v2/cryptocurrency/quotes/latest",
+                params={"symbol": ",".join(chunk), "convert": convert,
+                        "skip_invalid": "true"},
+            )
+            r.raise_for_status()
+            data.update(r.json().get("data", {}))
         for sym, entries in data.items():
             if isinstance(entries, list):
                 if not entries:

@@ -237,3 +237,34 @@ def test_both_ways_when_shorts_enabled():
     p = e.open_from_signal(sig, 100.0, _ts())
     t = e.on_price(p, 99.5, _ts())
     assert t is not None and t.reason == "take_profit" and t.pnl_usd > 0
+
+
+def test_live_poll_once_smoke():
+    """Run a full live poll cycle with a fake CMC client. Guards against the
+    live loop being truncated/typo'd (a mangled _poll_once once killed the
+    deployed agent — it built candles but never evaluated)."""
+    from binacci.config import RuntimeConfig
+    from binacci.execution import ExecutionEngine
+    from binacci.live import LiveLoop
+    from binacci.orchestrator import Orchestrator
+
+    scfg = StrategyConfig()
+    loop = LiveLoop(scfg, RuntimeConfig(), ExecutionEngine(scfg, 1000.0),
+                    Orchestrator(scfg, ExecutionEngine(scfg, 1000.0)))
+    assert isinstance(loop._min_bars_needed(), int)
+
+    class FakeCMC:
+        def __init__(self): self.t = 0.0
+        def quotes_full(self, symbols, convert="USD"):
+            self.t += 1
+            return {s: {"price": 100.0 + self.t, "volume_24h": 1000.0 * self.t,
+                        "percent_change_1h": 0.0, "percent_change_24h": 0.0}
+                    for s in symbols}
+        def macro_snapshot(self, *a, **k): return None
+
+    loop.cmc = FakeCMC()
+    # several polls must not raise (this is what crashed in production)
+    for _ in range(3):
+        loop._poll_once()
+    assert loop.errors == 0
+    assert loop.polls == 3

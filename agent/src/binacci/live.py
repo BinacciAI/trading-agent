@@ -471,4 +471,20 @@ class LiveLoop:
                 self.macro = None
 
         # 3) on each completed 1m bar, check TF boundaries
-        need = self._min_b
+        need = self._min_bars_needed()
+        prices = dict(self.prices)
+        for sym in completed:
+            builder = self.builders[sym]
+            for tf in self.live_tfs:
+                bars = builder.resample(tf)
+                if len(bars) < need:
+                    continue
+                newest = bars[-1]
+                key = (sym, tf.value)
+                if self._emitted.get(key) == newest.ts:
+                    continue  # no new completed bar on this TF
+                self._emitted[key] = newest.ts
+                df = to_dataframe(bars[-400:])
+                self.orch.update_references(sym, tf, df)
+                self.orch.evaluate(sym, tf, df, ts=newest.ts)
+                self.orch.on_candle(sym, tf, newest, prices)
