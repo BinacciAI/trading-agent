@@ -286,6 +286,8 @@ class LiveLoop:
                 rows = [[c.ts.isoformat(), c.open, c.high, c.low, c.close, c.volume]
                         for c in b.bars]
                 (self.data_dir / f"{s}_1m.json").write_text(json.dumps(rows))
+            from .persistence import dump_state
+            dump_state(self.engine, self.orch, self.data_dir / "state.json")
         except Exception:  # pragma: no cover
             log.exception("checkpoint failed")
 
@@ -301,6 +303,12 @@ class LiveLoop:
                 log.info("restored %d 1m bars for %s", len(b.bars), s)
             except Exception:  # pragma: no cover
                 log.exception("restore failed for %s", s)
+        try:
+            from .persistence import load_state
+            if load_state(self.engine, self.orch, self.data_dir / "state.json"):
+                log.info("warm restart: engine state restored from volume")
+        except Exception:  # pragma: no cover
+            log.exception("engine state restore failed")
 
     # ---------------- universe verification ----------------
 

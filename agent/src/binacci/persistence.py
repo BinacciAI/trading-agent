@@ -1,0 +1,132 @@
+"""Warm-restart state persistence.
+
+A redeploy/restart should be a non-event. Candle warmup already survives via
+the BINACCI_DATA_DIR volume; this module also persists the *engine* state
+(account, open + closed positions, kill switch) and recent decision traces,
+so when the agent comes back it resumes with its book and history intact
+instead of cold. Best-effort: any failure logs and is ignored — a corrupt
+checkpoint must never crash the loop.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from .config import Timeframe
+from .execution import ClosedTrade, ExecutionEngine
+from .models import (
+    Fill, GateResult, GateStep, Position, PositionState, Side,
+)
+
+log = logging.getLogger(__name__)
+STATE_VERSION = 1
+MAX_POSITIONS = 600
+MAX_TRACES = 300
+
+
+def _iso(dt: Optional[datetime]) -> Optional[str]:
+    return dt.isoformat() if dt else None
+
+
+def _parse(s: Optional[str]) -> Optional[datetime]:
+    return datetime.fromisoformat(s) if s else None
+
+
+def _pos_to_dict(p: Position) -> dict:
+    return {
+        "symbol": p.symbol, "timeframe": p.timeframe.value, "side": p.side.value,
+        "state": p.state.value, "averaging_done": p.averaging_done,
+        "peak_gain_pct": p.peak_gain_pct, "stop_pct": p.stop_pct,
+        "target_pct": p.target_pct, "opened_ts": _iso(p.opened_ts),
+        "closed_ts": _iso(p.closed_ts), "close_reason": p.close_reason,
+        "realized_pnl_usd": p.realized_pnl_usd, "meta": p.meta,
+        "fills": [{"ts": _iso(f.ts), "price": f.price, "qty": f.qty,
+                   "notional_usd": f.notional_usd, "tag": f.tag} for f in p.fills],
+    }
+
+
+def _pos_from_dict(d: dict) -> Position:
+    p = Position(
+        symbol=d["symbol"], timeframe=Timeframe(d["timeframe"]), side=Side(d["side"]),
+        state=PositionState(d["state"]), averaging_done=d.get("averaging_done", 0),
+        peak_gain_pct=d.get("peak_gain_pct", 0.0), stop_pct=d.get("stop_pct"),
+        target_pct=d.get("target_pct", 1.0), close_reason=d.get("close_reason", ""),
+        realized_pnl_usd=d.get("realized_pnl_usd", 0.0), meta=d.get("meta", {}),
+    )
+    p.opened_ts = _parse(d.get("opened_ts"))
+    p.closed_ts = _parse(d.get("closed_ts"))
+    p.fills = [Fill(ts=_parse(f["ts"]), price=f["price"], qty=f["qty"],
+                    notional_usd=f["notional_usd"], tag=f["tag"]) for f in d.get("fills", [])]
+    return p
+
+
+def dump_state(engine: ExecutionEngine, orchestrator, path: Path) -> None:
+    try:
+        positions = engine.positions[-MAX_POSITIONS:]
+        traces = []
+        for tr in getattr(orchestrator, "traces", [])[-MAX_TRACES:]:
+            traces.append({
+                "symbol": tr.symbol, "timeframe": tr.timeframe.value,
+                "ts": _iso(tr.ts), "strategy": tr.strategy, "entered": tr.entered,
+                "gates": [{"step": g.step.value, "passed": g.passed, "detail": g.detail}
+                          for g in tr.gates],
+            })
+        blob = {
+            "version": STATE_VERSION,
+            "account": {"deposit_usd": engine.account.deposit_usd,
+                        "realized_pnl_usd": engine.account.realized_pnl_usd},
+            "kill_switch_fired": engine.kill_switch_fired,
+            "positions": [_pos_to_dict(p) for p in positions],
+            "traces": traces,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(blob))
+        tmp.replace(path)  # atomic
+    except Exception:
+        log.exception("state checkpoint failed")
+
+
+def load_state(engine: ExecutionEngine, orchestrator, path: Path) -> bool:
+    """Restore engine + traces. Returns True if state was loaded."""
+    if not path.exists():
+        return False
+    try:
+        blob = json.loads(path.read_text())
+        if blob.get("version") != STATE_VERSION:
+            return False
+        acct = blob.get("account", {})
+        engine.account.deposit_usd = acct.get("deposit_usd", engine.account.deposit_usd)
+        engine.account.realized_pnl_usd = acct.get("realized_pnl_usd", 0.0)
+        engine.kill_switch_fired = bool(blob.get("kill_switch_fired", False))
+        engine.positions = [_pos_from_dict(d) for d in blob.get("positions", [])]
+        # rebuild closed-trade list from closed positions
+        engine.closed = [
+            ClosedTrade(position=p, pnl_usd=p.realized_pnl_usd, reason=p.close_reason)
+            for p in engine.positions if p.state is PositionState.CLOSED
+        ]
+        # restore recent traces (best-effort; references rebuild from candles)
+        try:
+            from .orchestrator import DecisionTrace
+
+            restored = []
+            for t in blob.get("traces", []):
+                dt = DecisionTrace(symbol=t["symbol"], timeframe=Timeframe(t["timeframe"]),
+                                   ts=_parse(t["ts"]), strategy=t.get("strategy", "reaction"),
+                                   entered=t.get("entered", False))
+                dt.gates = [GateResult(step=GateStep(g["step"]), passed=g["passed"],
+                                       detail=g.get("detail", "")) for g in t.get("gates", [])]
+                restored.append(dt)
+            orchestrator.traces = restored
+        except Exception:
+            log.exception("trace restore failed (non-fatal)")
+        log.info("restored engine state: %d positions, %d closed",
+                 len(engine.positions), len(engine.closed))
+        return True
+    except Exception:
+        log.exception("state restore failed")
+        return False
