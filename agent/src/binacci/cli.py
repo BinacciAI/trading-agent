@@ -148,6 +148,78 @@ def cmd_portfolio(args) -> int:
     return 0
 
 
+def cmd_timebasis(args) -> int:
+    """Show what a candle COUNT means in wall-clock time per timeframe."""
+    import json as _json
+    from .timebase import timebasis_table
+
+    rows = timebasis_table(args.bars)
+    if args.json:
+        print(_json.dumps(rows, indent=2))
+        return 0
+    print(f"\nTIME BASIS — {args.bars} candles per timeframe\n")
+    print(f"{'TF':>5}{'MIN/BAR':>9}{'TOTAL DAYS':>12}{'SPAN':>14}")
+    for r in rows:
+        print(f"{r['timeframe']:>5}{r['minutes_per_bar']:>9}"
+              f"{r['total_days']:>12.2f}{r['span']:>14}")
+    return 0
+
+
+def cmd_fullbacktest(args) -> int:
+    """All-universe, multi-timeframe backtest with strategy/market breakdown."""
+    import json as _json
+    from .backtest import run_full_backtest
+    from .config import RuntimeConfig
+    from .data import make_source
+
+    cfg = StrategyConfig.load()
+    if args.risk_mode:
+        cfg.apply_risk_mode(args.risk_mode)
+    rcfg = RuntimeConfig()
+    syms = (cfg.symbols if args.symbols.lower() == "all"
+            else [s.strip().upper() for s in args.symbols.split(",")])
+    if args.limit:
+        syms = syms[: args.limit]
+    tfs = ([Timeframe(t.strip()) for t in args.timeframes.split(",")]
+           if args.timeframes else None)
+    src = make_source(args.source, rcfg)
+
+    def _progress(done, total):
+        print(f"  ...{done}/{total} runs", flush=True)
+
+    res = run_full_backtest(cfg, src, syms, tfs, bars=args.bars,
+                            deposit_usd=args.deposit, eval_every=args.eval_every,
+                            risk_mode=args.risk_mode or None, progress=_progress)
+    if args.output:
+        from pathlib import Path
+        Path(args.output).write_text(_json.dumps(res, indent=2))
+        print(f"wrote {args.output}")
+
+    c, pf = res["config"], res["portfolio"]
+    print(f"\nFULL BACKTEST  source={args.source}  risk={c['risk_mode']}  "
+          f"leverage={c['perps_leverage']}x  target_mult={c['perps_target_mult']}")
+    print(f"universe={c['markets_in_universe']} markets x {len(c['timeframes'])} TFs "
+          f"= {pf['runs_completed']}/{pf['runs_attempted']} runs  ({pf['runs_skipped']} skipped)")
+    print(f"trades={pf['trades']}  win%={pf['win_rate_pct']}  pnl=${pf['total_pnl_usd']}  "
+          f"avg_ret/run={pf['avg_return_pct_per_run']}%  worst_dd={pf['worst_drawdown_pct']}%")
+
+    print("\nBY MARKET (book)")
+    for k, v in res["by_market"].items():
+        print(f"  {k:<6} trades={v['trades']:>5}  win%={v['win_rate_pct']:>5}  pnl=${v['total_pnl_usd']}")
+    print("\nBY STRATEGY")
+    for k, v in res["by_strategy"].items():
+        print(f"  {k:<20} trades={v['trades']:>5}  win%={v['win_rate_pct']:>5}  pnl=${v['total_pnl_usd']}")
+    print("\nBY TIMEFRAME (with time basis)")
+    print(f"  {'TF':>5}{'SPAN':>14}{'MKTS':>6}{'TRADES':>8}{'WIN%':>7}{'PNL$':>11}")
+    for tf, v in res["by_timeframe"].items():
+        print(f"  {tf:>5}{v['timebasis']['span']:>14}{v['markets_tested']:>6}"
+              f"{v['trades']:>8}{v['win_rate_pct']:>7}{v['total_pnl_usd']:>11.2f}")
+    print("\nTOP MARKETS")
+    for m in res["top_markets"][:10]:
+        print(f"  {m['symbol']:<8} trades={m['trades']:>4}  win%={m['win_rate_pct']:>5}  pnl=${m['total_pnl_usd']}")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="binacci", description="Binacci agent CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -185,6 +257,25 @@ def main(argv=None) -> int:
     up.add_argument("--limit", type=int, default=0, help="cap number of markets (0=all)")
     up.add_argument("--eval-every", dest="eval_every", type=int, default=1)
     up.set_defaults(fn=cmd_portfolio)
+
+    fb = sub.add_parser("fullbacktest",
+                        help="all-universe, multi-timeframe backtest w/ strategy+market breakdown")
+    fb.add_argument("--symbols", default="all", help="'all' or comma list")
+    fb.add_argument("--timeframes", default="", help="comma list e.g. 3m,15m,4h (default: cfg entry TFs)")
+    fb.add_argument("--bars", type=int, default=1500)
+    fb.add_argument("--deposit", type=float, default=1000.0)
+    fb.add_argument("--source", default="synthetic", help="synthetic | cmc | checkpoint")
+    fb.add_argument("--risk-mode", dest="risk_mode", default="",
+                    help="conservative | balanced | aggressive (sets leverage tier)")
+    fb.add_argument("--limit", type=int, default=0, help="cap number of markets (0=all)")
+    fb.add_argument("--eval-every", dest="eval_every", type=int, default=1)
+    fb.add_argument("--output", default="", help="write full JSON report to this path")
+    fb.set_defaults(fn=cmd_fullbacktest)
+
+    tb = sub.add_parser("timebasis", help="show wall-clock span of a candle count per timeframe")
+    tb.add_argument("--bars", type=int, default=1500)
+    tb.add_argument("--json", action="store_true")
+    tb.set_defaults(fn=cmd_timebasis)
 
     pp = sub.add_parser("paper", help="multi-symbol paper session")
     pp.add_argument("--symbols", default="BNB,BTC,ETH,CAKE,SOL")

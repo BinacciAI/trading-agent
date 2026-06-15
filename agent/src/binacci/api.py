@@ -54,6 +54,8 @@ def get_context() -> AgentContext:
 
 #: cache for the heavy universe backtest: key -> (ts, result)
 _UNIVERSE_CACHE: dict = {}
+#: cache for the full-universe (all-146 × multi-TF) backtest: key -> (ts, result)
+_FULL_CACHE: dict = {}
 
 
 def _default_source() -> str:
@@ -176,7 +178,9 @@ def build_app():
             "live_timeframes": [tf.value for tf in ctx.loop.live_tfs],
             "trade_mode": "spot+perps",
             "allow_shorts": ctx.scfg.allow_shorts,
-            "perps_leverage": float(__import__("os").environ.get("BINACCI_PERPS_LEVERAGE", "2")),
+            "perps_leverage": ctx.scfg.perps_leverage,
+            "perps_target_mult": ctx.scfg.perps_target_mult,
+            "perp_data_source": getattr(ctx.loop, "perp_data_source", "spot_quote"),
             "book_cap": ctx.scfg.book_cap(),
             "perp_strategies": sorted(ctx.scfg.perp_strategies),
             "spot_strategies": sorted(s.name for s in ctx.orchestrator.strategies
@@ -261,6 +265,57 @@ def build_app():
         res["universe_size"] = len(ctx.scfg.symbols)
         _UNIVERSE_CACHE[key] = (now, res)
         return {**res, "cached": False}
+
+    @app.get("/full-backtest")
+    def full_backtest(timeframes: str = "15m,4h,1d", bars: int = 800,
+                      limit: int = 0, source: str = "", risk_mode: str = "",
+                      eval_every: int = 2):
+        """ALL-universe (up to 146 markets) × MULTI-timeframe backtest with
+        per-strategy, per-market (spot/perp) and per-timeframe breakdowns plus
+        the wall-clock time basis of the run. Heavy — cached 15 min. Pass
+        ``limit`` (>0) to cap markets for a faster pass, ``risk_mode`` to test a
+        specific leverage tier. source: synthetic | cmc | checkpoint/live."""
+        from .backtest import run_full_backtest
+        from .data import make_source
+        import time
+
+        src_name = source or _default_source()
+        tfs = [Timeframe(t.strip()) for t in timeframes.split(",") if t.strip()]
+        bars = max(300, min(int(bars), 1500))
+        syms = ctx.scfg.symbols if limit <= 0 else ctx.scfg.symbols[:int(limit)]
+        rm = risk_mode.lower() or ctx.scfg.risk_mode.value
+        key = (src_name, tuple(t.value for t in tfs), bars, len(syms), rm, eval_every)
+        now = time.time()
+        hit = _FULL_CACHE.get(key)
+        if hit and now - hit[0] < 900:
+            return {**hit[1], "cached": True}
+        res = run_full_backtest(ctx.scfg, make_source(src_name, ctx.rcfg),
+                                symbols=syms, timeframes=tfs, bars=bars,
+                                deposit_usd=ctx.rcfg.deposit_usd,
+                                eval_every=max(1, int(eval_every)),
+                                risk_mode=rm)
+        used = src_name
+        if res["portfolio"]["runs_completed"] == 0 and src_name != "synthetic":
+            used = "synthetic"  # real data not accumulated yet -> show synthetic
+            res = run_full_backtest(ctx.scfg, make_source("synthetic", ctx.rcfg),
+                                    symbols=syms, timeframes=tfs, bars=bars,
+                                    deposit_usd=ctx.rcfg.deposit_usd,
+                                    eval_every=max(1, int(eval_every)), risk_mode=rm)
+        res["source"] = used
+        res["requested_source"] = src_name
+        _FULL_CACHE[key] = (now, res)
+        return {**res, "cached": False}
+
+    @app.get("/timebasis")
+    def timebasis(bars: int = 1500, timeframes: str = ""):
+        """Wall-clock span that a candle COUNT represents on each timeframe —
+        e.g. 1500 bars is ~15.6 days on 15m but ~4.1 years on 1d. Drives the
+        time-basis visual so bar counts are never shown without their meaning."""
+        from .timebase import timebasis_table
+
+        tfs = ([Timeframe(t.strip()) for t in timeframes.split(",") if t.strip()]
+               or None)
+        return {"bars": int(bars), "rows": timebasis_table(int(bars), tfs)}
 
     @app.get("/strategies")
     def strategies():

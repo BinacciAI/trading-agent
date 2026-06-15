@@ -243,3 +243,154 @@ def run_universe_backtest(
         "losers": sum(1 for r in results if r.total_pnl_usd <= 0),
         "per_symbol": per,
     }
+
+
+# --------------------------------------------------------------------------
+# Full-universe, multi-timeframe, per-strategy/per-market backtest
+# --------------------------------------------------------------------------
+
+def _accumulate(bucket: dict, key: str, pnl: float) -> None:
+    """Fold one trade pnl into a named bucket (count / wins / pnl)."""
+    b = bucket.setdefault(key, {"trades": 0, "wins": 0, "pnl_usd": 0.0})
+    b["trades"] += 1
+    b["wins"] += 1 if pnl > 0 else 0
+    b["pnl_usd"] += pnl
+
+
+def _finalize(bucket: dict) -> dict:
+    """Round + derive win-rate for each group, sorted by pnl desc."""
+    out = {}
+    for k, b in bucket.items():
+        t = b["trades"]
+        out[k] = {
+            "trades": t,
+            "win_rate_pct": round(b["wins"] / t * 100, 1) if t else 0.0,
+            "total_pnl_usd": round(b["pnl_usd"], 2),
+            "avg_pnl_usd": round(b["pnl_usd"] / t, 4) if t else 0.0,
+        }
+    return dict(sorted(out.items(), key=lambda kv: kv[1]["total_pnl_usd"], reverse=True))
+
+
+def run_full_backtest(
+    cfg: StrategyConfig,
+    source: CandleSource,
+    symbols: Optional[list[str]] = None,
+    timeframes: Optional[list[Timeframe]] = None,
+    bars: int = 1500,
+    deposit_usd: float = 1000.0,
+    eval_every: int = 1,
+    risk_mode: Optional[str] = None,
+    progress: Optional[callable] = None,
+) -> dict:
+    """Backtest the ENTIRE universe across MULTIPLE timeframes and break the
+    results down by strategy and by book (spot vs perp), with the time basis
+    of the run attached.
+
+    * ``symbols`` defaults to every market in ``cfg.symbols`` (all 146).
+    * ``timeframes`` defaults to ``cfg.entry_timeframes``.
+    * ``risk_mode`` (if given) is applied to a COPY of cfg so leverage/sizing
+      match the chosen mode without mutating the caller's config.
+    * Symbols/timeframes with too little data are skipped, never fatal — so it
+      runs the same on synthetic, CMC historical, or live checkpoints.
+
+    Returns a structured report: a portfolio roll-up, plus per-timeframe,
+    per-strategy, per-market, per-symbol, and time-basis sections.
+    """
+    from .timebase import timebasis_row, timebasis_table
+
+    run_cfg = cfg.model_copy(deep=True)
+    if risk_mode:
+        run_cfg.apply_risk_mode(risk_mode)
+
+    syms = list(symbols) if symbols is not None else list(run_cfg.symbols)
+    tfs = list(timeframes) if timeframes is not None else list(run_cfg.entry_timeframes)
+    tfs = sorted(tfs, key=lambda t: t.minutes)
+
+    results: list[BacktestResult] = []
+    skipped: list[dict] = []
+    by_strategy: dict = {}
+    by_market: dict = {}
+    by_tf: dict = {tf.value: {"trades": 0, "wins": 0, "pnl_usd": 0.0,
+                              "markets": 0, "timebasis": timebasis_row(bars, tf)}
+                   for tf in tfs}
+    per_symbol: dict = {}  # symbol -> aggregated across timeframes
+
+    total_runs = len(syms) * len(tfs)
+    done = 0
+    for tf in tfs:
+        for s in syms:
+            done += 1
+            if progress and done % 50 == 0:
+                progress(done, total_runs)
+            try:
+                r = run_backtest(run_cfg, source, s, tf, bars=bars,
+                                 deposit_usd=deposit_usd, eval_every=eval_every)
+            except Exception as exc:  # insufficient data / source gap
+                skipped.append({"symbol": s, "tf": tf.value, "why": str(exc)[:80]})
+                continue
+            results.append(r)
+            by_tf[tf.value]["markets"] += 1
+            ps = per_symbol.setdefault(s, {"trades": 0, "wins": 0, "pnl_usd": 0.0})
+            for t in r.trade_log:
+                pnl = t["pnl_usd"]
+                _accumulate(by_strategy, t["strategy"], pnl)
+                _accumulate(by_market, t.get("market", "spot"), pnl)
+                by_tf[tf.value]["trades"] += 1
+                by_tf[tf.value]["wins"] += 1 if pnl > 0 else 0
+                by_tf[tf.value]["pnl_usd"] += pnl
+                ps["trades"] += 1
+                ps["wins"] += 1 if pnl > 0 else 0
+                ps["pnl_usd"] += pnl
+
+    trades = sum(r.trades for r in results)
+    wins = sum(r.wins for r in results)
+    total_pnl = sum(r.total_pnl_usd for r in results)
+    worst_dd = max((r.max_drawdown_pct for r in results), default=0.0)
+
+    # per-symbol roll-up (across all timeframes) -> finalize + rank
+    sym_final = _finalize(per_symbol)
+    ranked = list(sym_final.items())
+
+    tf_final = {}
+    for k, b in by_tf.items():
+        t = b["trades"]
+        tf_final[k] = {
+            "markets_tested": b["markets"],
+            "trades": t,
+            "win_rate_pct": round(b["wins"] / t * 100, 1) if t else 0.0,
+            "total_pnl_usd": round(b["pnl_usd"], 2),
+            "timebasis": b["timebasis"],
+        }
+
+    return {
+        "config": {
+            "risk_mode": run_cfg.risk_mode.value,
+            "perps_leverage": run_cfg.perps_leverage,
+            "perps_target_mult": run_cfg.perps_target_mult,
+            "bars_per_run": bars,
+            "deposit_usd_per_run": deposit_usd,
+            "markets_in_universe": len(syms),
+            "timeframes": [tf.value for tf in tfs],
+            "perp_strategies": sorted(run_cfg.perp_strategies),
+        },
+        "portfolio": {
+            "runs_attempted": total_runs,
+            "runs_completed": len(results),
+            "runs_skipped": len(skipped),
+            "trades": trades,
+            "win_rate_pct": round(wins / trades * 100, 1) if trades else 0.0,
+            "total_pnl_usd": round(total_pnl, 2),
+            "avg_return_pct_per_run": round(
+                sum(r.return_pct for r in results) / len(results), 3) if results else 0.0,
+            "worst_drawdown_pct": round(worst_dd, 2),
+            "winning_runs": sum(1 for r in results if r.total_pnl_usd > 0),
+            "losing_runs": sum(1 for r in results if r.total_pnl_usd <= 0),
+        },
+        "by_timeframe": tf_final,
+        "by_strategy": _finalize(by_strategy),
+        "by_market": _finalize(by_market),
+        "time_basis": timebasis_table(bars, tfs),
+        "top_markets": [{"symbol": k, **v} for k, v in ranked[:15]],
+        "bottom_markets": [{"symbol": k, **v} for k, v in ranked[-10:]] if len(ranked) > 15 else [],
+        "skipped_sample": skipped[:20],
+    }

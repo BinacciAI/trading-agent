@@ -160,10 +160,15 @@ class RiskMode(str, Enum):
 #: mode -> (max_positions, entry_pct_of_working). entry shrinks as slots grow
 #: so the MAX fully-averaged deployed capital stays within the 70% working
 #: margin: positions * (entry_pct_of_working * 0.7 * 8) <= ~0.70.
+#: ``perps_leverage`` is the on-chain perp leverage applied to PERP-routed
+#: positions in that mode (spot is always 1x). Higher leverage controls the
+#: same notional with less posted margin — but it scales perp P/L AND drawdown
+#: by the same factor, so the kill switch / liquidation sit proportionally
+#: closer. Tiers: conservative 10x, balanced 25x, aggressive 50x.
 RISK_PRESETS: dict[RiskMode, dict] = {
-    RiskMode.CONSERVATIVE: {"max_positions": 15, "entry_pct_of_working": 0.0050},
-    RiskMode.BALANCED:     {"max_positions": 30, "entry_pct_of_working": 0.0035},
-    RiskMode.AGGRESSIVE:   {"max_positions": 50, "entry_pct_of_working": 0.0025},
+    RiskMode.CONSERVATIVE: {"max_positions": 15, "entry_pct_of_working": 0.0050, "perps_leverage": 10.0},
+    RiskMode.BALANCED:     {"max_positions": 30, "entry_pct_of_working": 0.0035, "perps_leverage": 25.0},
+    RiskMode.AGGRESSIVE:   {"max_positions": 50, "entry_pct_of_working": 0.0025, "perps_leverage": 50.0},
 }
 
 
@@ -374,7 +379,18 @@ class StrategyConfig(BaseSettings):
     #: neither starves the other — guarantees perps stays live alongside spot.
     book_share: float = 0.7
     #: Perps leverage — P/L on perp positions scales by this. Spot is 1x.
+    #: SET BY THE RISK MODE via :meth:`apply_risk_mode` (conservative 10x /
+    #: balanced 25x / aggressive 50x). This 2.0 is only the bare-constructor
+    #: default (so unit tests keep raw values); production goes through
+    #: :meth:`load`, which applies the preset then honours an explicit
+    #: BINACCI_PERPS_LEVERAGE override.
     perps_leverage: float = 2.0
+    #: Perps take-profit multiplier — scales the timeframe base target for
+    #: PERP-routed strategies only (spot is unaffected). Lifts perps above the
+    #: ~0.3% short-TF floor so a winner can arm the trailing stop (trigger
+    #: 0.40%) instead of insta-closing. 1.0 = legacy behaviour. Applied on top
+    #: of any per-strategy target_mult. Override: BINACCI_PERPS_TARGET_MULT.
+    perps_target_mult: float = 2.0
 
     #: Named risk preset. Applied by :meth:`load` (and the runtime switcher),
     #: NOT by the bare constructor — so unit tests keep the raw defaults.
@@ -398,8 +414,21 @@ class StrategyConfig(BaseSettings):
         path = os.environ.get("BINACCI_STRATEGY_FILE", "")
         cfg = cls.from_yaml(path) if (path and Path(path).exists()) else cls()
         cfg.apply_risk_mode(cfg.risk_mode)
+        # Perps leverage source of truth. apply_risk_mode() has set
+        # cfg.perps_leverage from the mode preset (10/25/50x). An explicit
+        # BINACCI_PERPS_LEVERAGE always wins. We then write the resolved value
+        # back to the env var because the venue/brain/api layers read leverage
+        # straight from the environment — exporting it keeps every consumer on
+        # the same number instead of silently falling back to the old 2x.
+        env_lev = os.environ.get("BINACCI_PERPS_LEVERAGE")
+        if env_lev is not None:
+            try:
+                cfg.perps_leverage = max(1.0, float(env_lev))
+            except (TypeError, ValueError):
+                pass
+        os.environ["BINACCI_PERPS_LEVERAGE"] = str(cfg.perps_leverage)
         try:
-            cfg.perps_leverage = max(1.0, float(os.environ.get("BINACCI_PERPS_LEVERAGE", cfg.perps_leverage)))
+            cfg.perps_target_mult = max(1.0, float(os.environ.get("BINACCI_PERPS_TARGET_MULT", cfg.perps_target_mult)))
         except (TypeError, ValueError):
             pass
         return cfg
@@ -413,6 +442,7 @@ class StrategyConfig(BaseSettings):
         if preset:
             self.risk.max_positions = preset["max_positions"]
             self.margin.entry_pct_of_working = preset["entry_pct_of_working"]
+            self.perps_leverage = preset["perps_leverage"]
         return self
 
     def risk_summary(self) -> dict:
@@ -426,6 +456,8 @@ class StrategyConfig(BaseSettings):
             "position_cap_pct_of_deposit": round(cap, 5),
             "max_deployed_pct_of_deposit": round(cap * self.risk.max_positions, 4),
             "aggregate_drawdown_kill_pct": self.risk.max_aggregate_drawdown_pct,
+            "perps_leverage": self.perps_leverage,
+            "perps_target_mult": self.perps_target_mult,
         }
 
     def market_for(self, strategy: str) -> str:

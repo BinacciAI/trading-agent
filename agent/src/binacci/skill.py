@@ -210,8 +210,11 @@ def market_state(cfg: StrategyConfig, source: CandleSource, symbol: str,
             "level_price": proposal.level_price if proposal else None,
             "level_kind": proposal.level_kind if proposal else None,
             "reasons": proposal.reasons if proposal else [],
-            "target_pct": (proposal.target_pct if proposal and proposal.target_pct
-                           is not None else cfg.target_for(tf)),
+            "target_pct": (
+                ((proposal.target_pct if proposal and proposal.target_pct is not None
+                  else cfg.target_for(tf))
+                 * (cfg.perps_target_mult if cfg.market_for(strategy) == "perp" else 1.0))
+            ),
         },
     }
 
