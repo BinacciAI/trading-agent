@@ -19,11 +19,18 @@ class AgentContext:
     """Runtime context shared by the API and the live loop."""
 
     def __init__(self):
+        import os
+
         self.scfg = StrategyConfig.load()
         self.rcfg = RuntimeConfig()
-        # Perps venue trades both directions; spot is long-only.
-        if self.rcfg.venue == "perps":
-            self.scfg.allow_shorts = True
+        # Both-ways trading. Paper mode SIMULATES on-chain perps (long+short),
+        # the live perps venue trades both ways for real; only spot (pancake)
+        # is long-only. Override with BINACCI_ALLOW_SHORTS=true|false.
+        shorts_env = os.environ.get("BINACCI_ALLOW_SHORTS")
+        if shorts_env is not None:
+            self.scfg.allow_shorts = shorts_env.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            self.scfg.allow_shorts = self.rcfg.venue in ("paper", "perps")
         self.engine = ExecutionEngine(self.scfg, deposit_usd=self.rcfg.deposit_usd)
         self.orchestrator = Orchestrator(self.scfg, self.engine)
         from .live import LiveLoop
@@ -56,6 +63,22 @@ def _default_source() -> str:
     return os.environ.get("BINACCI_BACKTEST_SOURCE", "synthetic")
 
 
+def _book_split(ctx) -> dict:
+    """Live spot vs perps breakdown — Binacci runs both books at once."""
+    out = {"spot": {"open": 0, "long": 0, "short": 0, "realized": 0.0},
+           "perp": {"open": 0, "long": 0, "short": 0, "realized": 0.0}}
+    for p in ctx.engine.open_positions():
+        b = out.get(p.meta.get("market", "spot"), out["spot"])
+        b["open"] += 1
+        b["long" if p.side.value == "long" else "short"] += 1
+    for t in ctx.engine.closed:
+        b = out.get(t.position.meta.get("market", "spot"), out["spot"])
+        b["realized"] += t.pnl_usd
+    for b in out.values():
+        b["realized"] = round(b["realized"], 2)
+    return out
+
+
 def build_app():
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
@@ -85,6 +108,9 @@ def build_app():
         snap = ctx.engine.snapshot(ctx.prices)
         snap["loop"] = ctx.loop.status()
         snap["venue"] = ctx.rcfg.venue
+        snap["allow_shorts"] = ctx.scfg.allow_shorts
+        snap["trade_mode"] = "spot+perps"
+        snap["books"] = _book_split(ctx)
         snap["prices"] = {k: round(v, 6) for k, v in ctx.prices.items()}
         return snap
 
@@ -95,6 +121,7 @@ def build_app():
             px = ctx.prices.get(p.symbol, p.avg_entry)
             out.append({
                 "symbol": p.symbol, "tf": p.timeframe.value, "side": p.side.value,
+                "market": p.meta.get("market", "spot"),
                 "strategy": p.meta.get("strategy", "reaction"),
                 "level_kind": p.meta.get("level_kind", ""),
                 "state": p.state.value, "avg_entry": p.avg_entry,
@@ -112,6 +139,7 @@ def build_app():
             "symbol": t.position.symbol, "tf": t.position.timeframe.value,
             "strategy": t.position.meta.get("strategy", "reaction"),
             "side": t.position.side.value,
+            "market": t.position.meta.get("market", "spot"),
             "pnl_usd": round(t.pnl_usd, 2), "reason": t.reason,
             "closed": t.position.closed_ts.isoformat() if t.position.closed_ts else None,
         } for t in ctx.engine.closed]
@@ -144,6 +172,11 @@ def build_app():
             "warmup_backfill": ctx.rcfg.warmup_backfill,
             "quote": ctx.scfg.quote,
             "live_timeframes": [tf.value for tf in ctx.loop.live_tfs],
+            "trade_mode": "spot+perps",
+            "allow_shorts": ctx.scfg.allow_shorts,
+            "perp_strategies": sorted(ctx.scfg.perp_strategies),
+            "spot_strategies": sorted(s.name for s in ctx.orchestrator.strategies
+                                      if ctx.scfg.market_for(s.name) == "spot"),
             "risk": ctx.scfg.risk_summary(),
             "risk_modes": [m.value for m in RiskMode],
             "credits": ctx.loop.credit_estimate(),
@@ -433,6 +466,46 @@ def build_app():
             "testnet": ctx.rcfg.use_testnet,
             "live_trading": ctx.rcfg.venue != "paper" and not ctx.rcfg.use_testnet,
         }
+
+    @app.get("/memory")
+    def memory():
+        """Binacci's brain — structured memory snapshot."""
+        from .brain import lessons, per_strategy_stats
+
+        snap = ctx.engine.snapshot(ctx.prices)
+        refs = []
+        book = getattr(ctx.orchestrator, "book", None)
+        if book is not None:
+            for (sym, tf), r in sorted(book.refs.items())[:60]:
+                refs.append({"symbol": sym, "tf": tf.value, "kind": r.kind.value,
+                             "price": r.price, "ts": r.ts.isoformat(), "clean": r.clean})
+        bars = {s: len(b.bars) for s, b in ctx.loop.builders.items()}
+        return {
+            "identity": "Binacci — autonomous BNB trading agent. Brains separated from hands; "
+                        "nothing is ever forgotten.",
+            "equity_usd": snap["equity_usd"], "realized_pnl_usd": snap["realized_pnl_usd"],
+            "open_positions": snap["slots_used"], "closed_trades": snap["closed_trades"],
+            "per_strategy": per_strategy_stats(ctx.engine),
+            "lessons": lessons(ctx.engine),
+            "references": refs,
+            "chart_memory": {"symbols_with_data": sum(1 for v in bars.values() if v),
+                             "max_bars": max(bars.values()) if bars else 0,
+                             "retention_bars": __import__("binacci.live", fromlist=["MAX_1M_BARS"]).MAX_1M_BARS},
+        }
+
+    @app.get("/memory/md")
+    def memory_md():
+        """The living MEMORY.md the agent writes about itself."""
+        import os
+        from pathlib import Path
+
+        from fastapi.responses import PlainTextResponse
+        from .brain import build_memory_md
+
+        p = Path(os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data")) / "MEMORY.md"
+        if p.exists():
+            return PlainTextResponse(p.read_text(encoding="utf-8"))
+        return PlainTextResponse(build_memory_md(ctx.loop))
 
     @app.get("/regime")
     def regime():

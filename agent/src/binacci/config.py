@@ -362,6 +362,15 @@ class StrategyConfig(BaseSettings):
     #: Long-only by default (spot venue); perps venue may enable shorts.
     allow_shorts: bool = False
 
+    #: Binacci runs a SPOT book and a PERPS book at the same time. Each
+    #: strategy is routed to one venue: spot strategies are long-only
+    #: (PancakeSwap spot), perps strategies trade both ways with leverage.
+    #: Both books share one risk engine + slot budget. A symbol can hold a
+    #: spot position AND a perp position concurrently (different strategies).
+    perp_strategies: set[str] = Field(default_factory=lambda: {
+        "mean_reversion", "volatility_squeeze", "vwap_reversion", "liquidity_sweep",
+    })
+
     #: Named risk preset. Applied by :meth:`load` (and the runtime switcher),
     #: NOT by the bare constructor — so unit tests keep the raw defaults.
     #: Override at boot: BINACCI_RISK_MODE=conservative|balanced|aggressive.
@@ -409,6 +418,11 @@ class StrategyConfig(BaseSettings):
             "max_deployed_pct_of_deposit": round(cap * self.risk.max_positions, 4),
             "aggregate_drawdown_kill_pct": self.risk.max_aggregate_drawdown_pct,
         }
+
+    def market_for(self, strategy: str) -> str:
+        """Which venue a strategy trades on: 'perp' (both-ways, leverage) or
+        'spot' (long-only). Both books run simultaneously."""
+        return "perp" if strategy in self.perp_strategies else "spot"
 
     def target_for(self, tf: Timeframe) -> float:
         return self.targets_pct.get(tf, DEFAULT_TARGETS[tf])

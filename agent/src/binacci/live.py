@@ -29,7 +29,7 @@ from .indicators import to_dataframe
 from .macro import MacroSnapshot
 from .models import Candle
 from .orchestrator import Orchestrator
-from .venues import Venue, make_venue
+from .venues import PaperVenue, PancakeSpotVenue, PerpsVenue, Venue, make_venue
 
 log = logging.getLogger(__name__)
 
@@ -156,8 +156,16 @@ class LiveLoop:
         self.data_dir = Path(os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data"))
         # the orchestrator's macro provider reads our cache
         self.orch.macro_provider = lambda: self.macro
-        # venue execution: engine decides, venue mirrors on-chain
+        # venue execution: engine decides, venues mirror on-chain. Binacci
+        # runs a SPOT book and a PERPS book at the same time; each position is
+        # routed by its meta["market"] tag. In paper mode both are simulated.
         self.venue: Venue = make_venue(rcfg)
+        if rcfg.venue == "paper":
+            self.spot_venue: Venue = self.venue
+            self.perp_venue: Venue = self.venue
+        else:
+            self.spot_venue = PancakeSpotVenue(rcfg=rcfg)
+            self.perp_venue = PerpsVenue(rcfg=rcfg)
         self.venue_log: list[dict] = []
         #: Liquidity-verified symbols (None until verification completes).
         #: Unverified symbols are analyzed but never executed on-chain.
@@ -165,6 +173,9 @@ class LiveLoop:
         if rcfg.venue != "paper":
             self.orch.on_open = self._venue_open
             self.orch.on_close = self._venue_close
+
+    def _venue_for(self, pos) -> Venue:
+        return self.perp_venue if pos.meta.get("market") == "perp" else self.spot_venue
 
     # ---------------- venue hooks ----------------
 
@@ -177,11 +188,12 @@ class LiveLoop:
             })
             return
         chain_sym = self.scfg.chain_symbol(pos.symbol)
-        res = self.venue.place_limit(chain_sym, pos.side, pos.avg_entry, pos.notional_usd)
+        market = pos.meta.get("market", "spot")
+        res = self._venue_for(pos).place_limit(chain_sym, pos.side, pos.avg_entry, pos.notional_usd)
         self.venue_log.append({
             "ts": datetime.now(timezone.utc).isoformat(), "action": "open",
-            "symbol": pos.symbol, "chain_symbol": chain_sym,
-            "strategy": pos.meta.get("strategy", "reaction"),
+            "symbol": pos.symbol, "chain_symbol": chain_sym, "market": market,
+            "strategy": pos.meta.get("strategy", "reaction"), "side": pos.side.value,
             "notional_usd": round(pos.notional_usd, 2),
             "ok": res.ok, "tx": res.tx_or_id, "detail": res.detail,
         })
@@ -193,11 +205,12 @@ class LiveLoop:
 
     def _venue_close(self, trade) -> None:
         pos = trade.position
-        res = self.venue.market_close(self.scfg.chain_symbol(pos.symbol), pos.side,
-                                      abs(pos.fills[-1].notional_usd))
+        res = self._venue_for(pos).market_close(self.scfg.chain_symbol(pos.symbol), pos.side,
+                                                abs(pos.fills[-1].notional_usd))
         self.venue_log.append({
             "ts": datetime.now(timezone.utc).isoformat(), "action": "close",
-            "symbol": pos.symbol, "reason": trade.reason,
+            "symbol": pos.symbol, "market": pos.meta.get("market", "spot"),
+            "reason": trade.reason,
             "ok": res.ok, "tx": res.tx_or_id, "detail": res.detail,
         })
         if not res.ok:
@@ -293,6 +306,8 @@ class LiveLoop:
                 (self.data_dir / f"{s}_1m.json").write_text(json.dumps(rows))
             from .persistence import dump_state
             dump_state(self.engine, self.orch, self.data_dir / "state.json")
+            from .brain import write_memory
+            write_memory(self, self.data_dir / "MEMORY.md")
         except Exception:  # pragma: no cover
             log.exception("checkpoint failed")
 
@@ -442,8 +457,15 @@ class LiveLoop:
         full = self.cmc.quotes_full(self.poll_symbols())
         completed: dict[str, Candle] = {}
         for sym, q in full.items():
-            self.prices[sym] = q["price"]
-            done = self.builders[sym].add(now, q["price"], vol24h=q.get("volume_24h"))
+            b = self.builders.get(sym)
+            if b is None:
+                continue  # CMC may return aliases/extras not in our universe
+            try:
+                px = float(q["price"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            self.prices[sym] = px
+            done = b.add(now, px, vol24h=q.get("volume_24h"))
             if done:
                 completed[sym] = done
         self.last_poll = now

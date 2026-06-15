@@ -91,6 +91,7 @@ export default function Page() {
               <span className="badge gold" style={{ textTransform: "capitalize" }}>{mode} mode</span>
               <span className="badge cyan">{markets} markets</span>
               <span className="badge gold">{activeStrats.length} strategies</span>
+              <span className="badge green">SPOT + PERPS</span>
             </div>
           </div>
           <div className="hero-right">

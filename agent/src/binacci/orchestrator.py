@@ -113,11 +113,16 @@ class Orchestrator:
         max_age = timedelta(minutes=tf.minutes * (self.cfg.sims.extrema_window * 6))
         fresh = ref is not None and (ts - ref.ts) <= max_age
 
-        sides = [Side.LONG] + ([Side.SHORT] if self.cfg.allow_shorts else [])
         last_trace: Optional[DecisionTrace] = None
         for strat in self.strategies:
             if len(df) < strat.min_bars:
                 continue
+            # Spot strategies are long-only; perps strategies trade both ways
+            # (when shorts are enabled). Both books run at the same time.
+            if self.cfg.market_for(strat.name) == "perp" and self.cfg.allow_shorts:
+                sides = [Side.LONG, Side.SHORT]
+            else:
+                sides = [Side.LONG]
             for s in sides:
                 tr = self._evaluate_one(strat, symbol, tf, df, ts, s, ref, fresh)
                 last_trace = tr
@@ -177,7 +182,8 @@ class Orchestrator:
             strategy=strat.name,
             meta={"level_kind": proposal.level_kind,
                   "level_strength": proposal.strength,
-                  "strategy": strat.name, "reasons": proposal.reasons},
+                  "strategy": strat.name, "reasons": proposal.reasons,
+                  "market": self.cfg.market_for(strat.name)},
         )
         # replace any stale pending for same (symbol, tf, strategy)
         self.pending = [p for p in self.pending

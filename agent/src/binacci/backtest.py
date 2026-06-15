@@ -172,6 +172,8 @@ def _build_result(symbol, tf, candles, warmup, deposit_usd, engine, equity) -> B
             "symbol": t.position.symbol,
             "tf": t.position.timeframe.value,
             "side": t.position.side.value,
+            "strategy": t.position.meta.get("strategy", "reaction"),
+            "market": t.position.meta.get("market", "spot"),
             "avg_entry": round(t.position.avg_entry, 6),
             "averaging_done": t.position.averaging_done,
             "opened": t.position.opened_ts.isoformat() if t.position.opened_ts else None,
@@ -237,7 +239,6 @@ def run_universe_backtest(
         "total_pnl_usd": round(total_pnl, 2),
         "avg_return_pct_per_market": round(
             sum(r.return_pct for r in results) / len(results), 3) if results else 0.0,
-        "worst_drawdown_pct": round(worst_dd, 2),
         "winners": sum(1 for r in results if r.total_pnl_usd > 0),
         "losers": sum(1 for r in results if r.total_pnl_usd <= 0),
         "per_symbol": per,

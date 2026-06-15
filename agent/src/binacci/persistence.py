@@ -19,7 +19,8 @@ from typing import Optional
 from .config import Timeframe
 from .execution import ClosedTrade, ExecutionEngine
 from .models import (
-    Fill, GateResult, GateStep, Position, PositionState, Side,
+    Fill, GateResult, GateStep, Position, PositionState,
+    ReferencePoint, RefKind, Side,
 )
 
 log = logging.getLogger(__name__)
@@ -64,6 +65,17 @@ def _pos_from_dict(d: dict) -> Position:
     return p
 
 
+def _ref_to_dict(r: ReferencePoint) -> dict:
+    return {"symbol": r.symbol, "timeframe": r.timeframe.value, "kind": r.kind.value,
+            "price": r.price, "ts": _iso(r.ts), "clean": r.clean, "meta": r.meta}
+
+
+def _ref_from_dict(d: dict) -> ReferencePoint:
+    return ReferencePoint(symbol=d["symbol"], timeframe=Timeframe(d["timeframe"]),
+                          kind=RefKind(d["kind"]), price=d["price"], ts=_parse(d["ts"]),
+                          clean=d.get("clean", False), meta=d.get("meta", {}))
+
+
 def dump_state(engine: ExecutionEngine, orchestrator, path: Path) -> None:
     try:
         positions = engine.positions[-MAX_POSITIONS:]
@@ -82,6 +94,8 @@ def dump_state(engine: ExecutionEngine, orchestrator, path: Path) -> None:
             "kill_switch_fired": engine.kill_switch_fired,
             "positions": [_pos_to_dict(p) for p in positions],
             "traces": traces,
+            "references": [_ref_to_dict(r) for r in
+                           getattr(getattr(orchestrator, "book", None), "refs", {}).values()],
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
@@ -124,8 +138,17 @@ def load_state(engine: ExecutionEngine, orchestrator, path: Path) -> bool:
             orchestrator.traces = restored
         except Exception:
             log.exception("trace restore failed (non-fatal)")
-        log.info("restored engine state: %d positions, %d closed",
-                 len(engine.positions), len(engine.closed))
+        # restore market memory (reference levels) so the agent wakes warm
+        try:
+            book = getattr(orchestrator, "book", None)
+            if book is not None:
+                for d in blob.get("references", []):
+                    book.update(_ref_from_dict(d))
+        except Exception:
+            log.exception("reference restore failed (non-fatal)")
+        log.info("restored engine state: %d positions, %d closed, %d references",
+                 len(engine.positions), len(engine.closed),
+                 len(blob.get("references", [])))
         return True
     except Exception:
         log.exception("state restore failed")
