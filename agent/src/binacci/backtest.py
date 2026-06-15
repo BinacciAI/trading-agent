@@ -7,6 +7,7 @@ report computed by this engine, making the spec verifiably backtestable.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
@@ -14,6 +15,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from . import indicators as _ind
 from .config import StrategyConfig, Timeframe
 from .data import CandleSource
 from .execution import ExecutionEngine
@@ -21,6 +23,12 @@ from .indicators import to_dataframe
 from .macro import MacroSnapshot
 from .models import Candle
 from .orchestrator import Orchestrator
+
+
+#: Opt-in: precompute causal indicators once per run and slice per bar
+#: (see indicators.prime_precompute). Default off; proven trade-identical by
+#: tests/test_fastind.py. Monkeypatchable in tests.
+FAST_BACKTEST: bool = os.environ.get("BINACCI_FAST_BACKTEST", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -112,29 +120,40 @@ def run_backtest(
     # without the per-bar DataFrame construction that otherwise dominates.
     full_df = to_dataframe(candles)
 
-    for i in range(warmup, len(candles)):
-        c = candles[i]
-        lo = max(0, i + 1 - max_window)
-        df = full_df.iloc[lo : i + 1]
-        macro_idx["i"] = i
+    # Opt-in fast path: compute causal indicators once over full_df and slice
+    # per bar. Indicators are causal (value at bar i uses only bars <= i), so
+    # this is lookahead-free; non-causal pivot/divergence detection stays
+    # windowed. Cleared in `finally` so state never leaks across runs.
+    primed = FAST_BACKTEST
+    if primed:
+        _ind.prime_precompute(full_df)
+    try:
+        for i in range(warmup, len(candles)):
+            c = candles[i]
+            lo = max(0, i + 1 - max_window)
+            df = full_df.iloc[lo : i + 1]
+            macro_idx["i"] = i
 
-        # background sims refresh references. ref_every=1 (default) keeps the
-        # exact per-bar model; the heavy universe sweep raises it to refresh at
-        # the evaluation cadence (references are only ever read by evaluate, so
-        # a matched cadence is a sound, much cheaper approximation).
-        if i % ref_every == 0:
-            orch.update_references(symbol, tf, df)
+            # background sims refresh references. ref_every=1 (default) keeps the
+            # exact per-bar model; the heavy universe sweep raises it to refresh
+            # at the evaluation cadence (references are only ever read by
+            # evaluate, so a matched cadence is a sound, much cheaper approx).
+            if i % ref_every == 0:
+                orch.update_references(symbol, tf, df)
 
-        # entry evaluation (gates 1-4 + park level)
-        if i % eval_every == 0:
-            orch.evaluate(symbol, tf, df, ts=c.ts)
+            # entry evaluation (gates 1-4 + park level)
+            if i % eval_every == 0:
+                orch.evaluate(symbol, tf, df, ts=c.ts)
 
-        # candle stream: fills, averaging, trailing, TP, kill switch
-        prices = {symbol: c.close}
-        orch.on_candle(symbol, tf, c, prices)
+            # candle stream: fills, averaging, trailing, TP, kill switch
+            prices = {symbol: c.close}
+            orch.on_candle(symbol, tf, c, prices)
 
-        snap = engine.snapshot(prices)
-        equity.append(snap["equity_usd"])
+            snap = engine.snapshot(prices)
+            equity.append(snap["equity_usd"])
+    finally:
+        if primed:
+            _ind.clear_precompute()
 
     # close any remaining open positions at the last price (mark-to-market)
     last = candles[-1]

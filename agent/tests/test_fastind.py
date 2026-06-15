@@ -115,3 +115,26 @@ def test_parallel_sweep_equivalent_to_serial():
                                  bars=400, eval_every=3, workers=2)
     assert json.dumps(serial, sort_keys=True, default=str) == \
            json.dumps(parallel, sort_keys=True, default=str)
+
+
+@pytest.mark.parametrize("sym,tf", [
+    ("BNB", Timeframe.M15), ("ETH", Timeframe.M15), ("CAKE", Timeframe.H4),
+    ("SOL", Timeframe.M30), ("ADA", Timeframe.M15), ("DOT", Timeframe.M15),
+])
+def test_precompute_backtest_identical(sym, tf):
+    """BINACCI_FAST_BACKTEST precompute path must yield identical trades to the
+    canonical per-bar path. Indicators are causal so the precompute is
+    lookahead-free; find_divergences bypasses it (seg-seeded RSI)."""
+    import binacci.backtest as bt
+    cfg = StrategyConfig(); cfg.apply_risk_mode("balanced")
+    try:
+        bt.FAST_BACKTEST = False
+        off = run_backtest(cfg, SyntheticSource(seed=hash(sym) % 100), sym, tf,
+                           bars=700, eval_every=1)
+        bt.FAST_BACKTEST = True
+        on = run_backtest(cfg, SyntheticSource(seed=hash(sym) % 100), sym, tf,
+                          bars=700, eval_every=1)
+    finally:
+        bt.FAST_BACKTEST = False
+    assert _trades(off) == _trades(on)
+    assert off.total_pnl_usd == pytest.approx(on.total_pnl_usd, abs=1e-9)
