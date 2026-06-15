@@ -60,6 +60,25 @@ _FULL_CACHE: dict = {}
 _FULL_JOBS: dict = {}
 
 
+def _initial_workers() -> int:
+    import os
+    v = os.environ.get("BINACCI_BACKTEST_WORKERS", "1").strip()
+    try:
+        return max(1, int(v))
+    except ValueError:
+        return 1
+
+
+#: runtime backtest performance controls (wired from the Settings page).
+_PERF: dict = {"backtest_workers": _initial_workers()}
+
+
+def _backtest_fast_on() -> bool:
+    """Live read of the precompute flag (module global, not an import-time copy)."""
+    import binacci.backtest as _bt
+    return bool(_bt.FAST_BACKTEST)
+
+
 def _default_source() -> str:
     """Default backtest data source (BINACCI_BACKTEST_SOURCE), e.g. set
     'cmc' on Railway where the CMC key + OHLCV plan exist."""
@@ -191,6 +210,9 @@ def build_app():
             "risk_modes": [m.value for m in RiskMode],
             "credits": ctx.loop.credit_estimate(),
             "cmc_key_set": bool(ctx.rcfg.cmc_api_key),
+            "fast_backtest": _backtest_fast_on(),
+            "backtest_workers": _PERF["backtest_workers"],
+            "cpu_count": __import__("os").cpu_count() or 1,
         }
 
     @app.post("/risk/mode")
@@ -208,6 +230,32 @@ def build_app():
         return {"ok": True, "mode": rm.value, "risk": ctx.scfg.risk_summary(),
                 "perps_leverage": ctx.scfg.perps_leverage,
                 "perps_target_mult": ctx.scfg.perps_target_mult}
+
+    @app.post("/backtest/perf")
+    def set_backtest_perf(fast_backtest: Optional[bool] = None,
+                          workers: Optional[int] = None):
+        """Wire the backtest performance controls from the Settings page.
+
+        ``fast_backtest`` toggles the causal-indicator precompute
+        (BINACCI_FAST_BACKTEST); ``workers`` sets the process count for the
+        universe sweep (BINACCI_BACKTEST_WORKERS, capped at cpu_count). Both
+        update the live module flag AND the env var, so serial in-process runs
+        and spawned worker processes alike honour the change. Neither affects
+        live trading or backtest results — only speed.
+        """
+        import os
+        import binacci.backtest as _bt
+
+        if fast_backtest is not None:
+            _bt.FAST_BACKTEST = bool(fast_backtest)
+            os.environ["BINACCI_FAST_BACKTEST"] = "1" if fast_backtest else "0"
+        if workers is not None:
+            w = max(1, min(int(workers), os.cpu_count() or 1))
+            _PERF["backtest_workers"] = w
+            os.environ["BINACCI_BACKTEST_WORKERS"] = str(w)
+        return {"ok": True, "fast_backtest": bool(_bt.FAST_BACKTEST),
+                "backtest_workers": _PERF["backtest_workers"],
+                "cpu_count": os.cpu_count() or 1}
 
     @app.get("/backtest")
     def backtest(symbol: str = "BNB", timeframe: str = "15m",
@@ -332,14 +380,16 @@ def build_app():
                 res = run_full_backtest(
                     ctx.scfg, make_source(src_name, ctx.rcfg), symbols=syms,
                     timeframes=tfs, bars=bars, deposit_usd=ctx.rcfg.deposit_usd,
-                    eval_every=eval_every, risk_mode=rm, progress=prog)
+                    eval_every=eval_every, risk_mode=rm, progress=prog,
+                    workers=_PERF["backtest_workers"])
                 used = src_name
                 if res["portfolio"]["runs_completed"] == 0 and src_name != "synthetic":
                     used = "synthetic"  # real data not accumulated yet
                     res = run_full_backtest(
                         ctx.scfg, make_source("synthetic", ctx.rcfg), symbols=syms,
                         timeframes=tfs, bars=bars, deposit_usd=ctx.rcfg.deposit_usd,
-                        eval_every=eval_every, risk_mode=rm, progress=prog)
+                        eval_every=eval_every, risk_mode=rm, progress=prog,
+                        workers=_PERF["backtest_workers"])
                 res["source"] = used
                 res["requested_source"] = src_name
                 state["result"] = res
