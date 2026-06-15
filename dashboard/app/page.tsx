@@ -25,6 +25,7 @@ type Strat = { active: string[]; open_positions_by_strategy: Record<string, numb
 const SL: Record<string, string> = { reaction: "Reaction", momentum_breakout: "Breakout",
   mean_reversion: "Mean-Rev", trend_follow: "Trend", volatility_squeeze: "Squeeze" };
 const sLabel = (s?: string) => (s ? SL[s] ?? s : "—");
+const Side = ({ s }: { s?: string }) => <span className={s === "short" ? "badge red" : "badge green"}>{(s ?? "long").toUpperCase()}</span>;
 
 function Spark({ data, up }: { data: number[]; up: boolean }) {
   if (!data || data.length < 2) return <div style={{ height: 54 }} />;
