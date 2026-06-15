@@ -167,6 +167,17 @@ class LiveLoop:
             self.spot_venue = PancakeSpotVenue(rcfg=rcfg)
             self.perp_venue = PerpsVenue(rcfg=rcfg)
         self.venue_log: list[dict] = []
+        # Live on-chain perp marks: when running the real perps venue, manage
+        # perp positions against the venue's own mark price (not the CMC spot
+        # quote). On by default for the perps venue; force with
+        # BINACCI_PERPS_LIVE_DATA=true / disable with =false. Never affects spot.
+        _flag = os.environ.get("BINACCI_PERPS_LIVE_DATA")
+        self.use_perp_marks: bool = (
+            _flag.lower() in ("1", "true", "yes") if _flag is not None
+            else isinstance(self.perp_venue, PerpsVenue)
+        )
+        #: Where perp position prices came from on the last pass (for the API).
+        self.perp_data_source: str = "spot_quote"
         #: Liquidity-verified symbols (None until verification completes).
         #: Unverified symbols are analyzed but never executed on-chain.
         self.verified: Optional[dict[str, dict]] = None
@@ -496,6 +507,25 @@ class LiveLoop:
         # 3) on each completed 1m bar, check TF boundaries
         need = self._min_bars_needed()
         prices = dict(self.prices)
+        # Overlay LIVE ON-CHAIN PERP MARKS for symbols that hold an open perp
+        # position, so TP / trailing / kill-switch judge perps on the price the
+        # venue would actually liquidate at. Spot positions keep the CMC quote.
+        # Fully guarded: any failure leaves the spot quote in place.
+        if self.use_perp_marks and hasattr(self.perp_venue, "mark_price"):
+            marked = 0
+            try:
+                perp_syms = {
+                    p.symbol for p in self.engine.open_positions()
+                    if p.meta.get("market") == "perp"
+                }
+                for sym in perp_syms:
+                    mk = self.perp_venue.mark_price(self.scfg.chain_symbol(sym))
+                    if mk:
+                        prices[sym] = mk
+                        marked += 1
+            except Exception:
+                log.exception("perp mark overlay failed — using spot quotes")
+            self.perp_data_source = "onchain_perp_mark" if marked else "spot_quote_fallback"
         for sym in completed:
             builder = self.builders[sym]
             for tf in self.live_tfs:

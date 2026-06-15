@@ -175,6 +175,11 @@ class Orchestrator:
             meta={"synthetic": True, "strategy": strat.name},
         )
         target = proposal.target_pct if proposal.target_pct is not None else self.cfg.target_for(tf)
+        # PERPS aim for a larger price move before TP (spot is untouched). This
+        # is the one place a target becomes a signal, so it covers all perp
+        # strategies uniformly — including the ones with no per-strategy mult.
+        if self.cfg.market_for(strat.name) == "perp":
+            target *= self.cfg.perps_target_mult
         sig = EntrySignal(
             symbol=symbol, timeframe=tf, side=side,
             level_price=proposal.level_price, reference=reference,

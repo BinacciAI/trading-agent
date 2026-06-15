@@ -14,20 +14,24 @@ type Status = {
 type Pos = {
   symbol: string; tf: string; side?: string; market?: string; strategy?: string; level_kind?: string; state: string;
   avg_entry: number; notional_usd: number; gain_pct: number; peak_gain_pct: number;
-  stop_pct: number | null; target_pct: number; averaging_done: number;
+  stop_pct: number | null; target_pct: number; averaging_done: number; leverage?: number;
 };
 type Trade = { symbol: string; tf: string; side?: string; market?: string; strategy?: string; pnl_usd: number; reason: string; closed: string | null };
 type Trace = { symbol: string; tf: string; ts: string; strategy?: string; entered: boolean;
   gates: { step: string; passed: boolean; detail: string }[] };
 type Strat = { active: string[]; open_positions_by_strategy: Record<string, number>;
   realized_pnl_by_strategy: Record<string, number> };
+type Cfg = { perps_leverage?: number; perps_target_mult?: number; perp_data_source?: string;
+  trade_mode?: string; allow_shorts?: boolean };
 
 const SL: Record<string, string> = { reaction: "Reaction", momentum_breakout: "Breakout",
   mean_reversion: "Mean-Rev", trend_follow: "Trend", volatility_squeeze: "Squeeze",
   vwap_reversion: "VWAP", liquidity_sweep: "Sweep" };
 const sLabel = (s?: string) => (s ? SL[s] ?? s.replace(/_/g, " ") : "—");
 const Side = ({ s }: { s?: string }) => <span className={s === "short" ? "badge red" : "badge green"}>{(s ?? "long").toUpperCase()}</span>;
-const Book = ({ m }: { m?: string }) => <span className={m === "perp" ? "badge gold" : "badge gray"}>{(m ?? "spot").toUpperCase()}</span>;
+const Book = ({ m, lev }: { m?: string; lev?: number }) =>
+  <span className={m === "perp" ? "badge gold" : "badge gray"}>
+    {(m ?? "spot").toUpperCase()}{m === "perp" && lev && lev > 1 ? ` ${fmt(lev)}×` : ""}</span>;
 
 // price formatter: more decimals for sub-dollar tokens, fewer for large prices
 const px = (n: number) => {
@@ -59,6 +63,7 @@ export default function Page() {
   const [trades] = useAgent<Trade[]>("/trades", []);
   const [traces] = useAgent<Trace[]>("/traces?limit=40", []);
   const [strat] = useAgent<Strat | null>("/strategies", null);
+  const [cfg] = useAgent<Cfg | null>("/config", null, 8000);
 
   const eqRef = useRef<number[]>([]);
   const [eq, setEq] = useState<number[]>([]);
@@ -101,7 +106,7 @@ export default function Page() {
               <span className="badge gold" style={{ textTransform: "capitalize" }}>{mode} mode</span>
               <span className="badge cyan">{markets} markets</span>
               <span className="badge gold">{activeStrats.length} strategies</span>
-              <span className="badge green">SPOT + PERPS</span>
+              <span className="badge green">SPOT + PERPS{cfg?.perps_leverage ? ` · ${fmt(cfg.perps_leverage)}×` : ""}</span>
             </div>
           </div>
           <div className="hero-right">
@@ -151,7 +156,7 @@ export default function Page() {
                 <tr key={i}>
                   <td className="mkt">{p.symbol}<span className="quote">/USDT</span></td>
                   <td><Side s={p.side} /></td>
-                  <td><Book m={p.market} /></td>
+                  <td><Book m={p.market} lev={p.leverage} /></td>
                   <td><span className="badge cyan">{sLabel(p.strategy)}</span></td>
                   <td className="num dim">{p.tf}</td>
                   <td><span className={p.state === "sl_in_profit" ? "badge green" : "badge gold"}>{p.state === "sl_in_profit" ? "LOCKED" : "ACTIVE"}</span></td>
@@ -230,6 +235,7 @@ export default function Page() {
         <div className="vault">
           <div className="title">🜲 Risk Vault</div>
           <div className="row"><span>Risk Mode</span><span className="v" style={{ textTransform: "capitalize" }}>{mode}</span></div>
+          <div className="row"><span>Perps Leverage</span><span className="v">{cfg?.perps_leverage ? `${fmt(cfg.perps_leverage)}×` : "—"}</span></div>
           <div className="row"><span>Position Slots</span><span className="v">{status?.slots_used ?? 0} / {slotsMax}</span></div>
           <div className="row"><span>Open Exposure</span><span className="v">${fmt(exposure)}</span></div>
           <div className="row"><span>Aggregate Drawdown</span><span className="v">${fmt(status?.aggregate_drawdown_usd ?? 0)}</span></div>

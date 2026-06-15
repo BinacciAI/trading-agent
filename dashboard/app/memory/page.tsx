@@ -27,7 +27,7 @@ export default function Memory() {
   const [md] = useAgentText("/memory/md");
   const [status] = useAgent<Status>("/status", {});
   const [cfg] = useAgent<{ perps_leverage?: number }>("/config", {});
-  const lev = cfg.perps_leverage ?? 2;
+  const lev = cfg.perps_leverage != null ? `${fmt(cfg.perps_leverage)}x` : "—";
   const books = status.books;
   const cm = mem.chart_memory || EMPTY.chart_memory;
   const days = (cm.retention_bars / 1440).toFixed(1);
@@ -69,7 +69,7 @@ export default function Memory() {
           <h2 className="section">Two Books, One Brain — Spot &amp; Perps at Once</h2>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
             <BookCard label="SPOT BOOK" sub="PancakeSwap · long-only" tone="green" b={books.spot} />
-            <BookCard label="PERPS BOOK" sub={`on-chain perps · long + short · ${lev}x`} tone="cyan" b={books.perp} both />
+            <BookCard label="PERPS BOOK" sub={`on-chain perps · long + short · ${lev}`} tone="cyan" b={books.perp} both />
           </div>
         </>
       )}

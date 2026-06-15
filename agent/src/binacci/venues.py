@@ -142,6 +142,13 @@ class TwakCLI:
     def perps_close(self, symbol: str, chain: str = "bsc") -> dict:
         return self.run("perps", "close", symbol, "--chain", chain)
 
+    def perps_mark(self, symbol: str, chain: str = "bsc") -> dict:
+        """Live on-chain perp MARK price for a symbol (the price the perp
+        venue marks positions against — funding/oracle composite, not the
+        spot quote). Honest: if the installed twak build has no perps mark
+        surface, the result carries an ``error`` and callers fall back."""
+        return self.run("perps", "mark", symbol, "--chain", chain)
+
 
 # --------------------------------------------------------------------------
 # PancakeSwap spot via TWAK (BSC mainnet)
@@ -268,6 +275,29 @@ class PerpsVenue:
             return OrderResult(ok=False, venue=self.name, detail=str(res.get("error"))[:300])
         return OrderResult(ok=True, venue=self.name,
                            tx_or_id=str(res.get("txHash") or res.get("hash") or ""))
+
+    def mark_price(self, symbol: str) -> Optional[float]:
+        """Live on-chain perp mark for ``symbol``, or None if unavailable.
+
+        Used by the live loop to manage perp positions (TP / trailing / kill)
+        against the venue's OWN mark rather than the CMC spot quote, so a perp
+        is judged on the price it would actually be liquidated at. Never
+        raises — any failure returns None and the caller keeps the spot quote.
+        """
+        if self.twak is None or not getattr(self.twak, "installed", False):
+            return None
+        try:
+            res = self.twak.perps_mark(symbol)
+        except Exception:
+            return None
+        if not isinstance(res, dict) or res.get("error"):
+            return None
+        raw = res.get("markPrice") or res.get("mark") or res.get("price")
+        try:
+            px = float(raw)
+            return px if px > 0 else None
+        except (TypeError, ValueError):
+            return None
 
     def balance_usd(self) -> float:
         res = self.twak.balance("bsc")

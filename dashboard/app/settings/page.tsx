@@ -7,20 +7,24 @@ type Risk = {
   risk_mode: string; max_positions: number; reserve_pct: number;
   entry_pct_of_deposit: number; position_cap_pct_of_deposit: number;
   max_deployed_pct_of_deposit: number; aggregate_drawdown_kill_pct: number;
+  perps_leverage?: number; perps_target_mult?: number;
 };
 type Cfg = {
   venue: string; use_testnet: boolean; deposit_usd: number; poll_seconds: number;
   macro_refresh_seconds: number; fear_greed_refresh_seconds: number;
   poll_only_verified: boolean; warmup_backfill: boolean; quote: string;
   live_timeframes: string[]; risk: Risk; risk_modes: string[];
+  trade_mode?: string; allow_shorts?: boolean;
+  perps_leverage?: number; perps_target_mult?: number; perp_data_source?: string;
+  book_cap?: number; perp_strategies?: string[]; spot_strategies?: string[];
   credits: { per_day: number; per_month: number; breakdown: Record<string, number>; polled_symbols: number };
   cmc_key_set: boolean;
 };
 
 const MODE_BLURB: Record<string, string> = {
-  conservative: "15 slots · larger entries · widest safety margin",
-  balanced: "30 slots · mid-size entries · active across many markets",
-  aggressive: "50 slots · smallest entries · maximum market coverage",
+  conservative: "15 slots · larger entries · 10× perps · widest safety margin",
+  balanced: "30 slots · mid-size entries · 25× perps · active across many markets",
+  aggressive: "50 slots · smallest entries · 50× perps · maximum market coverage",
   custom: "manual — uses raw config values",
 };
 
@@ -54,9 +58,12 @@ export default function Settings() {
 
       <h2 className="section">Risk Mode</h2>
       <p style={{ fontSize: 12.5, color: "var(--text-secondary)", lineHeight: 1.7, maxWidth: 760, marginBottom: 14 }}>
-        Each mode scales the number of concurrent positions and the per-entry size <i>together</i>, so a
-        wider book stays just as conservative — more markets held at once, each a proportionally smaller
-        slice, the same 30% kill switch and 30% reserve underneath. Switching affects new entries only.
+        Each mode scales the number of concurrent positions and the per-entry size <i>together</i>, so spot
+        book exposure stays bounded as the book widens. Modes also set the <b>perps leverage tier</b>
+        (conservative 10× · balanced 25× · aggressive 50×): higher leverage controls the same notional with
+        less posted margin, but scales perp P/L <i>and</i> drawdown by the same factor — so liquidation sits
+        proportionally closer. The 30% reserve and 30% kill switch hold underneath every mode. Switching
+        affects new entries only.
       </p>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
         {modes.map((m) => (
@@ -79,6 +86,36 @@ export default function Settings() {
         <div className="card"><div className="lbl">Position Cap</div><div className="val">{fmt((r?.position_cap_pct_of_deposit ?? 0) * 100)}%</div></div>
         <div className="card"><div className="lbl">Max Deployed</div><div className="val cyan">{fmt((r?.max_deployed_pct_of_deposit ?? 0) * 100)}%</div></div>
         <div className="card"><div className="lbl">Kill Switch</div><div className="val neg">{fmt((r?.aggregate_drawdown_kill_pct ?? 0) * 100)}%</div></div>
+      </div>
+
+      <h2 className="section">Perps &amp; Leverage</h2>
+      <div className="cards" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
+        <div className="card"><div className="lbl">Perps Leverage</div>
+          <div className="val gold">{cfg?.perps_leverage != null ? `${fmt(cfg.perps_leverage)}×` : "—"}</div>
+          <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>Set by risk mode. Spot is always 1×.</p></div>
+        <div className="card"><div className="lbl">Perps TP Multiplier</div>
+          <div className="val cyan">{cfg?.perps_target_mult != null ? `${fmt(cfg.perps_target_mult)}×` : "—"}</div>
+          <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>Scales perp take-profit target only.</p></div>
+        <div className="card"><div className="lbl">Perp Price Feed</div>
+          <div className="val">{cfg?.perp_data_source === "onchain_perp_mark" ? "On-chain mark"
+            : cfg?.perp_data_source === "spot_quote_fallback" ? "Spot (fallback)"
+            : cfg?.perp_data_source === "spot_quote" ? "Spot quote" : "—"}</div>
+          <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>Live perps manage against the venue mark.</p></div>
+        <div className="card"><div className="lbl">Book Cap (per book)</div>
+          <div className="val">{cfg?.book_cap ?? "—"}</div>
+          <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>Max slots either book may hold.</p></div>
+        <div className="card"><div className="lbl">Shorts</div>
+          <div className={cfg?.allow_shorts ? "val pos" : "val"}>{cfg?.allow_shorts ? "Enabled" : "Long-only"}</div>
+          <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>Perps trade both ways when enabled.</p></div>
+        <div className="card"><div className="lbl">Trade Mode</div>
+          <div className="val gold">{(cfg?.trade_mode ?? "spot+perps").toUpperCase()}</div>
+          <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>Both books run at once.</p></div>
+      </div>
+      <div className="vault" style={{ maxWidth: 760, marginTop: 12 }}>
+        <div className="row"><span>Perp strategies ({cfg?.perp_strategies?.length ?? 0})</span>
+          <span className="v">{(cfg?.perp_strategies ?? []).map((s) => s.replace(/_/g, " ")).join(", ") || "—"}</span></div>
+        <div className="row"><span>Spot strategies ({cfg?.spot_strategies?.length ?? 0})</span>
+          <span className="v">{(cfg?.spot_strategies ?? []).map((s) => s.replace(/_/g, " ")).join(", ") || "—"}</span></div>
       </div>
 
       <h2 className="section">Runtime</h2>
