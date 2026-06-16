@@ -46,7 +46,7 @@ export default function Agents() {
         <span className="badge gold">{loop?.warmup?.tradable_tfs?.length ?? 0}/{Object.keys(loop?.warmup?.required_1m ?? {}).length || 6} TIMEFRAMES WARM</span>
       </div>
 
-      <h2 className="section">Analysis Agents — 5 Simulations</h2>
+      <h2 className="section">Analysis Agents</h2>
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(290px, 1fr))" }}>
         {SIMS.map((s) => (
           <div key={s.code} className="card">
@@ -72,7 +72,7 @@ export default function Agents() {
         </div>
       </div>
 
-      <h2 className="section">BNB Chain Layer — Identity &amp; Commerce (BNB AI Agent SDK)</h2>
+      <h2 className="section">On-Chain Layer</h2>
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))" }}>
         <div className="card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -111,7 +111,7 @@ export default function Agents() {
         </div>
       </div>
 
-      <h2 className="section">Warmup — Agent Intake Coverage</h2>
+      <h2 className="section">Warmup Coverage</h2>
       {(() => {
         const w = loop?.warmup;
         const req = w?.required_1m ?? {};

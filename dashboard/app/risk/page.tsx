@@ -36,7 +36,7 @@ export default function Risk() {
           🜲 {status?.kill_switch_fired ? "KILL SWITCH FIRED" : "KILL SWITCH ARMED"}</span>
       </div>
 
-      <h2 className="section">Hard Limits — Enforced in Code, Not Prompts</h2>
+      <h2 className="section">Hard Limits</h2>
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))" }}>
         <div className="card">
           <div className="lbl">Reserved Margin</div>
@@ -67,7 +67,7 @@ export default function Risk() {
         </div>
       </div>
 
-      <h2 className="section">Perps Leverage — Same Notional, Less Margin, Closer Liquidation</h2>
+      <h2 className="section">Perps Leverage</h2>
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))" }}>
         <div className="card">
           <div className="lbl">Perps Leverage</div>

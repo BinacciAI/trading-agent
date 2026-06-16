@@ -15,7 +15,7 @@ export default function Signals() {
         <span className={live ? "badge green" : "badge gray"}>{live ? "LIVE" : "OFFLINE"}</span>
         <span className="badge cyan">{signals.length} PARKED LEVELS</span>
       </div>
-      <h2 className="section">Pending Entries — Limits Parked at Levels</h2>
+      <h2 className="section">Pending Entries</h2>
       <p style={{ color: "var(--text-secondary)", fontSize: 12.5, marginBottom: 12, maxWidth: 720 }}>
         Gates 1–4 confirmed; the agent is waiting for price to touch the exact level (gate 5).
         A signal detected is never a trade executed — if the level isn't touched before expiry, the signal dies unfilled.

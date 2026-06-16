@@ -46,7 +46,7 @@ export default function Logs() {
         </table>
       </div>
 
-      <h2 className="section">Full Decision Audit — Every Evaluation, Every Gate</h2>
+      <h2 className="section">Decision Audit</h2>
       <div className="tbl-wrap">
         <table>
           <thead><tr><th>Time</th><th>Market</th><th>TF</th><th>Decision Trail</th><th>Blocking Reason</th><th>Result</th></tr></thead>

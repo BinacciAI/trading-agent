@@ -37,14 +37,12 @@ export default function Memory() {
     <main className="main">
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
         <span className={live ? "badge green" : "badge gray"}>{live ? "LIVE" : "OFFLINE"}</span>
-        <span className="badge cyan">🧠 PERSISTENT BRAIN</span>
-        <span className="badge gold">NOTHING EVER FORGOTTEN</span>
       </div>
-      <h2 className="section">Binacci's Memory — Brain, Consciousness & Soul</h2>
+      <h2 className="section">Persistent Memory</h2>
       <p style={{ color: "var(--text-secondary)", fontSize: 12.5, marginBottom: 16, maxWidth: 760 }}>
         Three durable memory layers persist on the volume across every restart and redeploy.
         The agent writes its own MEMORY.md each checkpoint — identity, regime, positions, and
-        auto-distilled lessons. It wakes up knowing every level it has ever traded from.
+        auto-distilled lessons.
       </p>
 
       {/* three memory layers */}
@@ -66,7 +64,7 @@ export default function Memory() {
       {/* spot + perps books, side by side */}
       {books && (
         <>
-          <h2 className="section">Two Books, One Brain — Spot &amp; Perps at Once</h2>
+          <h2 className="section">Spot &amp; Perps — Two Books</h2>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
             <BookCard label="SPOT BOOK" sub="PancakeSwap · long-only" tone="green" b={books.spot} />
             <BookCard label="PERPS BOOK" sub={`on-chain perps · long + short · ${lev}`} tone="cyan" b={books.perp} both />
@@ -106,7 +104,7 @@ export default function Memory() {
       )}
 
       {/* reference levels */}
-      <h2 className="section">Reference Levels — What It Trades Reactions From</h2>
+      <h2 className="section">Reference Levels</h2>
       <div className="tbl-wrap" style={{ marginBottom: 20 }}>
         <table>
           <thead><tr><th>Market</th><th>TF</th><th>Anchor</th><th>Price</th><th>Set At</th><th>Pipeline</th></tr></thead>
@@ -128,14 +126,14 @@ export default function Memory() {
         </table>
       </div>
 
-      {/* the soul — raw MEMORY.md the agent writes about itself */}
-      <h2 className="section">MEMORY.md — The Agent's Own Words</h2>
+      {/* raw MEMORY.md the agent writes each checkpoint */}
+      <h2 className="section">MEMORY.md</h2>
       <pre style={{
         background: "var(--bg-elevated, #0d1117)", border: "1px solid var(--border, #232a36)",
         borderRadius: 10, padding: "18px 20px", overflow: "auto", maxHeight: 540,
         fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)", fontSize: 12.5,
         lineHeight: 1.7, color: "var(--text-secondary)", whiteSpace: "pre-wrap",
-      }}>{md || "loading the brain…"}</pre>
+      }}>{md || "loading…"}</pre>
     </main>
   );
 }

@@ -132,7 +132,7 @@ export default function Console() {
         <span>Leverage <b>{cfg.perps_leverage ?? "—"}×</b></span>
       </div>
 
-      <h2 className="section">Live Controls — Apply to the Running Engine</h2>
+      <h2 className="section">Live Controls</h2>
       <div className="vault" style={{ marginBottom: 20 }}>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
           {(cfg.risk_modes ?? ["conservative", "balanced", "aggressive"]).map((m) => (
@@ -158,7 +158,7 @@ export default function Console() {
         </div>
       </div>
 
-      <h2 className="section">P/L Attribution — Net by Strategy</h2>
+      <h2 className="section">Net P/L by Strategy</h2>
       <div className="chartbox" style={{ marginBottom: 20 }}>
         <AttributionBars rows={Object.entries(attr.by_strategy).map(([label, r]) => ({ label, net: r.net }))}
           empty="no closed/open P/L yet" />
@@ -168,7 +168,7 @@ export default function Console() {
         <div>{attrTable("by Regime", attr.by_regime)}</div>
       </div>
 
-      <h2 className="section">Risk Alerts — Stops &amp; Kills</h2>
+      <h2 className="section">Risk Alerts</h2>
       <div className="tbl-wrap short">
         <table>
           <thead><tr><th>Market</th><th>Strategy</th><th>Event</th><th className="num">P/L</th><th className="num">When</th></tr></thead>

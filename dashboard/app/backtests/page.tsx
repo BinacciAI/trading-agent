@@ -278,7 +278,7 @@ export default function Backtests() {
       )}
       {mode === "full" && (
         <>
-          <h2 className="section">Time Basis — What a Candle Count Means in Real Time</h2>
+          <h2 className="section">Time Basis</h2>
           <TimeBasisChart rows={tb} bars={parseInt(bars, 10) || 1500} />
 
           {prog && (
@@ -347,7 +347,7 @@ export default function Backtests() {
                 </table>
               </div>
 
-              <h2 className="section">By Timeframe — with Time Basis</h2>
+              <h2 className="section">By Timeframe</h2>
               <div className="tbl-wrap">
                 <table>
                   <thead><tr><th>TF</th><th>Span ({full.config.bars_per_run} bars)</th><th>Markets</th><th>Trades</th><th>Win %</th><th>Total P/L</th></tr></thead>
