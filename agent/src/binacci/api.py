@@ -286,6 +286,34 @@ def build_app():
                 "perps_leverage": ctx.scfg.perps_leverage,
                 "perps_target_mult": ctx.scfg.perps_target_mult}
 
+    @app.get("/risk/auto")
+    def risk_auto():
+        """Margin matcher: recommend the risk envelope that fits the live
+        deposit. Pure/read-only — returns the recommendation + per-mode fee
+        table without changing anything."""
+        from .riskmatch import match_risk
+        rec = match_risk(ctx.rcfg.deposit_usd)
+        rec["ok"] = True
+        rec["current_mode"] = ctx.scfg.risk_mode.value
+        return rec
+
+    @app.post("/risk/auto")
+    def risk_auto_apply():
+        """Apply the margin-matched recommendation as the live risk mode
+        (same persist/export path as a manual switch)."""
+        from .riskmatch import match_risk
+        from .config import RiskMode
+        rec = match_risk(ctx.rcfg.deposit_usd)
+        rm = RiskMode(rec["recommended_mode"])
+        ctx.scfg.apply_risk_mode(rm)
+        ctx.scfg.apply_size_env()
+        ctx.scfg.export_runtime_env()
+        from .persistence import save_operator_settings
+        save_operator_settings(getattr(ctx, "_data_dir", "/tmp/binacci-data"),
+                               {"risk_mode": rm.value, "perps_leverage": ctx.scfg.perps_leverage})
+        return {"ok": True, "applied_mode": rm.value, "rationale": rec["rationale"],
+                "risk": ctx.scfg.risk_summary(), "perps_leverage": ctx.scfg.perps_leverage}
+
     @app.post("/control")
     def control(perps_leverage: Optional[float] = None, min_strength: Optional[float] = None,
                 regime_weighting: Optional[bool] = None, perps_target_mult: Optional[float] = None,

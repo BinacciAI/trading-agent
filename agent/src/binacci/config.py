@@ -555,10 +555,22 @@ class StrategyConfig(BaseSettings):
 
     def apply_size_env(self) -> "StrategyConfig":
         """Structural overrides for fee-efficient sizing on small deposits:
-        bigger/fewer positions so notional clears fixed gas. These override the
-        risk-mode preset, so call them LAST (after apply_risk_mode / operator
-        settings)."""
+        bigger/fewer positions so notional clears fixed gas.
+
+        The structural pins (entry size / slots / averaging) are now governed by
+        the risk-mode PRESET and the margin matcher, so they are only honoured
+        here when the operator explicitly opts in with BINACCI_SIZE_OVERRIDE=1.
+        Without that flag these legacy env vars are ignored and the active mode
+        wins — so switching modes (or auto-matching to margin) actually changes
+        slots and entry size. The go-live exposure cap is always applied."""
         import os
+        # Go-live exposure cap: always honoured, independent of the override.
+        try:
+            self.golive_max_usd = max(0.0, float(os.environ.get("BINACCI_GOLIVE_MAX_USD", self.golive_max_usd)))
+        except (TypeError, ValueError):
+            pass
+        if os.environ.get("BINACCI_SIZE_OVERRIDE", "").strip().lower() not in ("1", "true", "yes", "on"):
+            return self
         try:
             self.margin.entry_pct_of_working = max(1e-5, float(
                 os.environ.get("BINACCI_ENTRY_PCT_WORKING", self.margin.entry_pct_of_working)))
@@ -567,10 +579,6 @@ class StrategyConfig(BaseSettings):
         try:
             self.risk.max_positions = max(1, int(float(
                 os.environ.get("BINACCI_MAX_POSITIONS", self.risk.max_positions))))
-        except (TypeError, ValueError):
-            pass
-        try:
-            self.golive_max_usd = max(0.0, float(os.environ.get("BINACCI_GOLIVE_MAX_USD", self.golive_max_usd)))
         except (TypeError, ValueError):
             pass
         _avg = os.environ.get("BINACCI_AVERAGING")

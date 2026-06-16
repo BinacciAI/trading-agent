@@ -378,7 +378,8 @@ select option { background: var(--bg-panel); color: var(--text-primary); }
 
 /* Command Center — hero band */
 .hero {
-  display: flex; gap: 20px; align-items: stretch; justify-content: space-between;
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 460px);
+  gap: 24px; align-items: stretch;
   background: var(--gradient-panel);
   border: 1px solid var(--border-gold);
   border-radius: var(--radius-xl);
@@ -389,7 +390,7 @@ select option { background: var(--bg-panel); color: var(--text-primary); }
   background: radial-gradient(600px 200px at 85% -40%, rgba(245,185,63,0.10), transparent 70%);
   pointer-events: none; }
 .hero-left { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.hero-right { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; justify-content: flex-end; }
+.hero-right { width: auto; min-width: 0; display: flex; flex-direction: column; justify-content: flex-end; }
 .eyebrow { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.22em;
   text-transform: uppercase; color: var(--text-muted); }
 .hero-eq { font-family: var(--font-display); font-weight: 700; font-size: 42px;
@@ -590,3 +591,54 @@ h2.section::after { content: ""; flex: 1; height: 1px;
 .statline b { font-family: var(--font-mono); color: var(--text-primary); margin-left: 6px; font-size: 13px; }
 .statline b.pos { color: var(--profit); } .statline b.neg { color: var(--loss); }
 .statline b.gold { color: var(--brand-gold); } .statline b.cyan { color: var(--brand-cyan); }
+
+
+/* ============================================================
+   Responsive — fill ultrawide, collapse cleanly to mobile
+   ============================================================ */
+
+/* Side padding scales with the viewport: big screens breathe instead of
+   stranding a dead gutter; small screens tighten up. */
+.main { padding: 22px clamp(18px, 2.4vw, 60px) 44px; }
+
+/* Ultrawide (>=1900px): widen the chrome and let the hero chart grow so the
+   terminal uses the space rather than leaving it empty on the right. */
+@media (min-width: 1900px) {
+  .sidebar { width: 232px; }
+  .rail { width: 340px; }
+  .hero { grid-template-columns: minmax(0, 1fr) minmax(360px, 560px); }
+  .hero-eq { font-size: 50px; }
+  .cards { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+}
+/* Beyond ~2.6k, center the content column so lines don't sprawl edge-to-edge. */
+@media (min-width: 2600px) {
+  .main { padding-left: calc((100vw - 2480px) / 2); padding-right: calc((100vw - 2480px) / 2); }
+}
+
+/* Tablet: stack the hero before it gets cramped. */
+@media (max-width: 1024px) {
+  .hero { grid-template-columns: 1fr; }
+  .hero-right { width: 100%; }
+}
+
+/* Mobile: sidebar becomes a horizontal pill bar; page scrolls naturally;
+   tables scroll horizontally inside their box; KPIs go 2-up. */
+@media (max-width: 860px) {
+  .shell { height: auto; min-height: 100vh; overflow: visible; }
+  .body { flex-direction: column; overflow: visible; }
+  .sidebar {
+    display: flex; flex-direction: row; width: 100%; gap: 6px;
+    overflow-x: auto; padding: 8px 12px;
+    border-right: none; border-bottom: 1px solid var(--border-soft);
+  }
+  .sidebar .nav-label, .sidebar .nav-foot { display: none; }
+  .nav-item { white-space: nowrap; padding: 8px 13px; font-size: 12.5px; }
+  .main { padding: 16px 14px 30px; overflow-y: visible; }
+  .cards { grid-template-columns: repeat(2, 1fr); }
+  .hero-eq { font-size: 32px; }
+  .tbl-wrap table { min-width: 560px; }
+}
+@media (max-width: 440px) {
+  .topbar { padding: 11px 14px; }
+  .wordmark { font-size: 15px; letter-spacing: 0.2em; }
+}
