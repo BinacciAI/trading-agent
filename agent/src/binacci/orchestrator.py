@@ -91,6 +91,7 @@ class Orchestrator:
         #: mirrors engine state on-chain; it never decides.
         self.on_open = None   # fn(position) -> None
         self.on_close = None  # fn(closed_trade) -> None
+        self.on_average = None  # fn(position) -> None  (averaging add mirror)
 
     # ---------------- background sims ----------------
 
@@ -252,8 +253,14 @@ class Orchestrator:
                         else pos.fills[-1].price * (1 + step / 100.0)
                     hit = candle.low <= trigger_price if pos.side is Side.LONG else candle.high >= trigger_price
                     if hit:
-                        self.engine.try_average(pos, level_price=trigger_price,
-                                                fill_price=trigger_price, ts=ts)
+                        added = self.engine.try_average(pos, level_price=trigger_price,
+                                                        fill_price=trigger_price, ts=ts)
+                        if added and self.on_average:
+                            try:
+                                self.on_average(pos)
+                            except Exception:  # venue failure never corrupts engine state
+                                import logging
+                                logging.getLogger(__name__).exception("on_average hook failed")
             trade = self.engine.on_price(pos, candle.close, ts)
             if trade:
                 closed.append(trade)

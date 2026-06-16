@@ -18,6 +18,9 @@ type Pos = {
   stop_pct: number | null; target_pct: number; averaging_done: number; leverage?: number;
 };
 type Trade = { symbol: string; tf: string; side?: string; market?: string; strategy?: string; pnl_usd: number; reason: string; closed: string | null; open_tx?: string; close_tx?: string };
+type VenueSafety = { venue: string; trading_halted?: boolean; halt_reason?: string;
+  preflight_ok?: boolean | null; preflight_detail?: string; reconcile_state?: string;
+  reconcile_detail?: string; mev_protect?: boolean; confirm_receipts?: boolean };
 type Trace = { symbol: string; tf: string; ts: string; strategy?: string; entered: boolean;
   gates: { step: string; passed: boolean; detail: string }[] };
 type Strat = { active: string[]; open_positions_by_strategy: Record<string, number>;
@@ -60,6 +63,7 @@ function Spark({ data, up }: { data: number[]; up: boolean }) {
 
 export default function Page() {
   const [status, live] = useAgent<Status | null>("/status", null);
+  const [venue] = useAgent<VenueSafety | null>("/venue", null);
   const [positions] = useAgent<Pos[]>("/positions", []);
   const [trades] = useAgent<Trade[]>("/trades", []);
   const [traces] = useAgent<Trace[]>("/traces?limit=40", []);
@@ -92,6 +96,30 @@ export default function Page() {
   return (
     <>
       <main className="main">
+        {venue && venue.venue !== "paper" && (() => {
+          const halted = venue.trading_halted;
+          const pending = venue.reconcile_state === "pending_ack";
+          const pfFail = venue.preflight_ok === false;
+          if (!halted && !pending && !pfFail) {
+            return (
+              <div className="safety-banner ok">
+                LIVE · preflight {venue.preflight_ok ? "OK" : "—"} · MEV-protect {venue.mev_protect ? "ON" : "off"} · receipts {venue.confirm_receipts ? "verified" : "trusted"}
+              </div>
+            );
+          }
+          return (
+            <div className={`safety-banner ${pending ? "warn" : "halt"}`}>
+              <strong>
+                {halted ? "TRADING HALTED" : pending ? "RECONCILE PENDING" : "PREFLIGHT FAILED"}
+              </strong>
+              <span>{venue.halt_reason || venue.reconcile_detail || venue.preflight_detail || ""}</span>
+              <span className="safety-hint">
+                {pending ? "POST /agent/venue/reconcile/ack once verified against chain"
+                  : halted ? "resolve, then POST /agent/venue/resume" : "fix wallet/auth, then POST /agent/venue/preflight"}
+              </span>
+            </div>
+          );
+        })()}
         {/* Hero band */}
         <div className="hero">
           <div className="hero-left">

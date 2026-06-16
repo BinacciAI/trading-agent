@@ -532,6 +532,28 @@ class RuntimeConfig(BaseSettings):
     bsc_testnet_rpc: str = "https://data-seed-prebsc-1-s1.bnbchain.org:8545"
     wallet_address: str = ""
     use_testnet: bool = True
+
+    # ---- live-funds execution safety (real money path) ----
+    #: Spot swap slippage tolerance (%). Close uses this x close_slippage_mult.
+    spot_slippage_pct: float = 0.5
+    close_slippage_mult: float = 1.6
+    #: Route swaps through a private/MEV-protected relay when the installed
+    #: twak build supports it (passes --private). Off by default — only enable
+    #: if your CLI honours it, else swaps may error.
+    mev_protect: bool = False
+    #: After a venue returns a tx hash, verify the on-chain receipt status via
+    #: JSON-RPC before trusting the fill. A reverted tx -> the fill is rejected
+    #: and the engine rolls back. Unconfirmed (timeout) -> kept but flagged.
+    confirm_receipts: bool = True
+    receipt_timeout_s: int = 75
+    receipt_poll_s: float = 3.0
+    #: Transient venue failures are retried this many extra times before the
+    #: engine rolls back (open) or reverts+halts (close).
+    venue_max_retries: int = 2
+    #: On boot, reconcile restored engine positions against the chain. If
+    #: restored open positions can't be independently verified, new trading is
+    #: HALTED until a human acks (/venue/reconcile/ack) — unless auto-ack.
+    reconcile_auto_ack: bool = False
     #: Track-1 on-chain competition contract (records the agent wallet on the
     #: immutable participant list). Registration via `twak compete register`.
     competition_contract: str = "0x212c61b9b72c95d95bf29cf032f5e5635629aed5"

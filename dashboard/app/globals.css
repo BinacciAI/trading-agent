@@ -536,3 +536,25 @@ h2.section::after { content: ""; flex: 1; height: 1px;
 .txcell { white-space: nowrap; }
 .txcell .txlink + .txlink { margin-left: 10px; }
 .muted { color: var(--text-dim, #6b7785); }
+
+/* Live-funds safety banner (Command Center) */
+.safety-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 10px 14px; margin-bottom: 16px; border-radius: 8px;
+  font-size: 13px; border: 1px solid transparent;
+}
+.safety-banner.ok {
+  color: var(--text-dim, #6b7785);
+  border-color: var(--border, #1e2630);
+  background: rgba(120, 200, 140, 0.05);
+}
+.safety-banner.warn {
+  color: #e8b339; border-color: rgba(232, 179, 57, 0.4);
+  background: rgba(232, 179, 57, 0.08);
+}
+.safety-banner.halt {
+  color: #ff5d5d; border-color: rgba(255, 93, 93, 0.45);
+  background: rgba(255, 93, 93, 0.08);
+}
+.safety-banner strong { letter-spacing: 0.04em; }
+.safety-hint { margin-left: auto; opacity: 0.8; font-family: var(--font-mono, monospace); font-size: 11px; }

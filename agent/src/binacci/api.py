@@ -501,8 +501,35 @@ def build_app():
             "testnet": ctx.rcfg.use_testnet,
             "wallet": ctx.rcfg.wallet_address,
             "explorer_tx_base": _explorer_tx_base(ctx.rcfg),
+            "preflight_ok": ctx.loop.preflight_ok,
+            "preflight_detail": ctx.loop.preflight_detail,
+            "trading_halted": ctx.engine.trading_halted,
+            "halt_reason": ctx.engine.halt_reason,
+            "reconcile_state": ctx.loop.reconcile_state,
+            "reconcile_detail": ctx.loop.reconcile_detail,
+            "onchain_balance_usd": ctx.loop.onchain_balance_usd,
+            "mev_protect": ctx.rcfg.mev_protect,
+            "confirm_receipts": ctx.rcfg.confirm_receipts,
             "log": ctx.loop.venue_log[-50:],
         }
+
+    @app.post("/venue/preflight")
+    def venue_preflight():
+        """Re-run venue preflight (wallet/auth/net). Halts on failure."""
+        ok = ctx.loop.run_preflight()
+        return {"preflight_ok": ok, "detail": ctx.loop.preflight_detail,
+                "trading_halted": ctx.engine.trading_halted}
+
+    @app.post("/venue/reconcile/ack")
+    def venue_reconcile_ack():
+        """Human ack that restored positions match the chain — clears the boot halt."""
+        return ctx.loop.ack_reconcile()
+
+    @app.post("/venue/resume")
+    def venue_resume():
+        """Clear a trading halt (preflight/desync) after the operator resolves it."""
+        ctx.engine.resume()
+        return {"trading_halted": ctx.engine.trading_halted, "halt_reason": ctx.engine.halt_reason}
 
     @app.get("/x402")
     def x402_info():

@@ -58,6 +58,19 @@ class ExecutionEngine:
         self.positions: list[Position] = []
         self.closed: list[ClosedTrade] = []
         self.kill_switch_fired: bool = False
+        #: Hard halt on NEW opens (preflight failure / boot-reconcile mismatch /
+        #: unrecoverable venue desync). Closes and management still run so the
+        #: book can always be flattened. Cleared by resume() after a human ack.
+        self.trading_halted: bool = False
+        self.halt_reason: str = ""
+
+    def halt(self, reason: str) -> None:
+        self.trading_halted = True
+        self.halt_reason = reason
+
+    def resume(self) -> None:
+        self.trading_halted = False
+        self.halt_reason = ""
 
     # ---------------- sizing ----------------
 
@@ -92,6 +105,8 @@ class ExecutionEngine:
 
     def can_open(self, symbol: str, tf: Timeframe, strategy: str = "reaction") -> bool:
         if self.kill_switch_fired:
+            return False
+        if self.trading_halted:
             return False
         if self.slots_free() <= 0:
             return False
@@ -205,6 +220,91 @@ class ExecutionEngine:
         self.closed.append(trade)
         return trade
 
+    # ---------------- venue reconciliation (keeps books == chain) ----------------
+
+    def _entry_fill(self, pos: Position) -> Optional[Fill]:
+        for f in pos.fills:
+            if f.tag == "entry":
+                return f
+        return None
+
+    def rollback_open(self, pos: Position) -> bool:
+        """Remove a just-opened position that never filled on-chain. The engine
+        booked it optimistically; the venue open failed, so it must not exist."""
+        if pos in self.positions and pos.state is not PositionState.CLOSED:
+            self.positions.remove(pos)
+            return True
+        return False
+
+    def reconcile_open_fill(self, pos: Position, real_price: float) -> None:
+        """Rewrite the entry fill to the venue's real fill price so avg_entry and
+        all downstream P&L reflect what actually filled on-chain — not the limit
+        level the engine booked at. USD notional spent is held constant."""
+        if real_price <= 0:
+            return
+        f = self._entry_fill(pos)
+        if f is None:
+            return
+        pos.meta["booked_entry_price"] = f.price
+        f.price = real_price
+        f.qty = f.notional_usd / real_price
+        pos.meta["reconciled_entry"] = True
+
+    def reconcile_average_fill(self, pos: Position, real_price: float) -> None:
+        """Rewrite the most recent averaging add to its real on-chain fill."""
+        if real_price <= 0 or not pos.fills:
+            return
+        f = pos.fills[-1]
+        if not f.tag.startswith("avg"):
+            return
+        f.price = real_price
+        f.qty = f.notional_usd / real_price
+
+    def rollback_average(self, pos: Position) -> bool:
+        """Undo the most recent averaging add when the venue add failed."""
+        if pos.fills and pos.fills[-1].tag.startswith("avg"):
+            pos.fills.pop()
+            pos.averaging_done = max(0, pos.averaging_done - 1)
+            return True
+        return False
+
+    def reconcile_close_fill(self, trade: ClosedTrade, real_price: float) -> None:
+        """Recompute realized P&L from the venue's real exit fill price."""
+        if real_price <= 0:
+            return
+        pos = trade.position
+        exit_fill = pos.fills[-1] if pos.fills and pos.fills[-1].tag == "exit" else None
+        old_pnl = pos.realized_pnl_usd
+        new_pnl = pos.unrealized_pnl_usd(real_price)  # open size, exits excluded
+        if exit_fill is not None:
+            exit_fill.price = real_price
+        self.account.realized_pnl_usd += (new_pnl - old_pnl)
+        pos.realized_pnl_usd = new_pnl
+        trade.pnl_usd = new_pnl
+        pos.meta["reconciled_close"] = True
+
+    def revert_close(self, trade: ClosedTrade) -> Optional[Position]:
+        """Un-close a position whose on-chain close failed after retries, so the
+        engine's books match the chain (the position is still open on-chain).
+        It returns to management; the caller should halt new opens + alert."""
+        pos = trade.position
+        if pos.state is not PositionState.CLOSED:
+            return pos
+        if pos.fills and pos.fills[-1].tag == "exit":
+            pos.fills.pop()
+        self.account.realized_pnl_usd -= pos.realized_pnl_usd
+        pos.realized_pnl_usd = 0.0
+        pos.closed_ts = None
+        prior = trade.reason
+        pos.close_reason = ""
+        pos.state = (PositionState.SL_IN_PROFIT if pos.stop_pct is not None
+                     else PositionState.OPEN)
+        if trade in self.closed:
+            self.closed.remove(trade)
+        pos.meta["close_failed"] = prior
+        pos.meta["close_attempts"] = pos.meta.get("close_attempts", 0) + 1
+        return pos
+
     # ---------------- kill switch ----------------
 
     def aggregate_drawdown_usd(self, prices: dict[str, float]) -> float:
@@ -226,10 +326,14 @@ class ExecutionEngine:
             return []
         self.kill_switch_fired = True
         out: list[ClosedTrade] = []
-        for p in list(self.positions):
-            if p.state in (PositionState.OPEN, PositionState.SL_IN_PROFIT):
-                px = prices.get(p.symbol, p.avg_entry)
-                out.append(self._close(p, px, ts, reason="kill_switch"))
+        # close worst-first: if the venue can only process closes sequentially,
+        # the biggest losers get flattened before slower ones can bleed further.
+        openpos = [p for p in self.positions
+                   if p.state in (PositionState.OPEN, PositionState.SL_IN_PROFIT)]
+        openpos.sort(key=lambda p: p.unrealized_pnl_usd(prices.get(p.symbol, p.avg_entry)))
+        for p in openpos:
+            px = prices.get(p.symbol, p.avg_entry)
+            out.append(self._close(p, px, ts, reason="kill_switch"))
         return out
 
     # ---------------- reporting ----------------
@@ -251,6 +355,8 @@ class ExecutionEngine:
             "slots_max": self.cfg.risk.max_positions,
             "aggregate_drawdown_usd": round(self.aggregate_drawdown_usd(prices), 2),
             "kill_switch_fired": self.kill_switch_fired,
+            "trading_halted": self.trading_halted,
+            "halt_reason": self.halt_reason,
             "closed_trades": len(self.closed),
         }
 

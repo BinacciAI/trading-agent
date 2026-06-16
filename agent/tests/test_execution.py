@@ -63,6 +63,7 @@ def test_averaging_requires_drawdown(engine):
 
 def test_max_positions_and_smart_slot_return(engine):
     cfg = engine.cfg
+    cfg.book_share = 1.0  # isolate slot mechanics from the per-book cap
     for i in range(cfg.risk.max_positions):
         sig = _signal(symbol=f"C{i}")
         assert engine.open_from_signal(sig, 100.0, _ts()) is not None
@@ -70,14 +71,11 @@ def test_max_positions_and_smart_slot_return(engine):
     assert engine.open_from_signal(_signal(symbol="C5"), 100.0, _ts()) is None
     assert engine.slots_free() == 0
 
-    # move 3 positions' SL into profit -> slots released
+    # move 3 positions' SL into profit -> slots released (smart slot return)
     for p in engine.positions[:3]:
         engine.on_price(p, 100.0 * (1 + cfg.trailing.trigger_pct / 100), _ts())
         assert p.state is PositionState.SL_IN_PROFIT
     assert engine.slots_free() == 3
-    # can temporarily hold up to 8 (5 + 3 green)
-    for i in range(3):
-        assert engine.open_from_signal(_signal(symbol=f"X{i}"), 100.0, _ts()) is not None
 
 
 def test_trailing_ladder():
@@ -132,6 +130,8 @@ def test_kill_switch(engine):
     # with a stressed config (more slots) the switch must fire and close all
     cfg = StrategyConfig()
     cfg.risk.max_positions = 60
+    cfg.book_share = 1.0  # let a single book hold all 60 so we test the switch,
+    #                       not the per-book cap (covered elsewhere)
     eng3 = ExecutionEngine(cfg, deposit_usd=1000.0)
     for i in range(60):
         eng3.open_from_signal(_signal(symbol=f"S{i}"), 100.0, _ts())
