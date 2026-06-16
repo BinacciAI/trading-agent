@@ -225,6 +225,10 @@ class LiveLoop:
             "reason": trade.reason,
             "ok": res.ok, "tx": res.tx_or_id, "detail": res.detail,
         })
+        if res.ok:
+            pos.meta["venue_close_tx"] = res.tx_or_id
+            if res.fill_price:
+                pos.meta["venue_close_fill"] = res.fill_price
         if not res.ok:
             log.error("venue close failed for %s: %s", pos.symbol, res.detail)
 

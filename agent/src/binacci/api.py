@@ -79,6 +79,11 @@ def _backtest_fast_on() -> bool:
     return bool(_bt.FAST_BACKTEST)
 
 
+def _explorer_tx_base(rcfg) -> str:
+    """BscScan tx URL prefix — testnet-aware. Append a 0x… hash to link a trade."""
+    return "https://testnet.bscscan.com/tx/" if rcfg.use_testnet else "https://bscscan.com/tx/"
+
+
 def _default_source() -> str:
     """Default backtest data source (BINACCI_BACKTEST_SOURCE), e.g. set
     'cmc' on Railway where the CMC key + OHLCV plan exist."""
@@ -136,6 +141,7 @@ def build_app():
         snap["trade_mode"] = "spot+perps"
         snap["books"] = _book_split(ctx)
         snap["prices"] = {k: round(v, 6) for k, v in ctx.prices.items()}
+        snap["explorer_tx_base"] = _explorer_tx_base(ctx.rcfg)
         return snap
 
     @app.get("/positions")
@@ -155,6 +161,7 @@ def build_app():
                 "peak_gain_pct": round(p.peak_gain_pct, 3),
                 "stop_pct": p.stop_pct, "target_pct": p.target_pct,
                 "averaging_done": p.averaging_done,
+                "open_tx": p.meta.get("venue_tx", ""),
             })
         return out
 
@@ -167,6 +174,8 @@ def build_app():
             "market": ctx.scfg.market_for(t.position.meta.get("strategy", "reaction")),
             "pnl_usd": round(t.pnl_usd, 2), "reason": t.reason,
             "closed": t.position.closed_ts.isoformat() if t.position.closed_ts else None,
+            "open_tx": t.position.meta.get("venue_tx", ""),
+            "close_tx": t.position.meta.get("venue_close_tx", ""),
         } for t in ctx.engine.closed]
 
     @app.get("/traces")
@@ -491,6 +500,7 @@ def build_app():
             "venue": ctx.rcfg.venue,
             "testnet": ctx.rcfg.use_testnet,
             "wallet": ctx.rcfg.wallet_address,
+            "explorer_tx_base": _explorer_tx_base(ctx.rcfg),
             "log": ctx.loop.venue_log[-50:],
         }
 

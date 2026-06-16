@@ -40,3 +40,11 @@ export function useAgentText(path: string, ms = 8000): [string, boolean] {
 
 export const fmt = (n: number) =>
   n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+
+/** A real on-chain hash (vs a paper-mode id like "paper-3"). */
+export const isRealTx = (h?: string | null): h is string =>
+  !!h && /^0x[0-9a-fA-F]{6,}$/.test(h);
+
+/** Shorten a hash for display: 0x12ab34…cd9f */
+export const shortTx = (h: string) =>
+  h.length > 14 ? `${h.slice(0, 8)}…${h.slice(-4)}` : h;

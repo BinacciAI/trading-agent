@@ -521,3 +521,18 @@ h2.section::after { content: ""; flex: 1; height: 1px;
 }
 .tfpill.warm { color: var(--brand-gold); border-color: var(--border-gold); background: rgba(245, 185, 63, 0.08); }
 .tfpill-count { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-secondary); margin-left: 3px; }
+
+/* On-chain tx explorer links (Command Center trades + execution log) */
+.txlink {
+  display: inline-block;
+  font-family: var(--font-mono, "JetBrains Mono", monospace);
+  font-size: 12px;
+  color: var(--brand-gold, #F5B93F);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: color .12s ease, border-color .12s ease;
+}
+.txlink:hover { color: var(--deep-gold, #C88A1A); border-bottom-color: currentColor; }
+.txcell { white-space: nowrap; }
+.txcell .txlink + .txlink { margin-left: 10px; }
+.muted { color: var(--text-dim, #6b7785); }
