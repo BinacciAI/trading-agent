@@ -231,6 +231,13 @@ def build_app():
             "allow_shorts": ctx.scfg.allow_shorts,
             "perps_leverage": ctx.scfg.perps_leverage,
             "perps_target_mult": ctx.scfg.perps_target_mult,
+            "min_signal_strength": ctx.scfg.min_signal_strength,
+            "regime_weighting": ctx.scfg.regime_weighting,
+            "trailing": {"trigger": ctx.scfg.trailing.trigger_pct,
+                         "initial": ctx.scfg.trailing.initial_sl_pct,
+                         "step": ctx.scfg.trailing.step_pct},
+            "trading_halted": ctx.engine.trading_halted,
+            "halt_reason": ctx.engine.halt_reason,
             "perp_data_source": getattr(ctx.loop, "perp_data_source", "spot_quote"),
             "book_cap": ctx.scfg.book_cap(),
             "perp_strategies": sorted(ctx.scfg.perp_strategies),
@@ -260,6 +267,72 @@ def build_app():
         return {"ok": True, "mode": rm.value, "risk": ctx.scfg.risk_summary(),
                 "perps_leverage": ctx.scfg.perps_leverage,
                 "perps_target_mult": ctx.scfg.perps_target_mult}
+
+    @app.post("/control")
+    def control(perps_leverage: Optional[float] = None, min_strength: Optional[float] = None,
+                regime_weighting: Optional[bool] = None, perps_target_mult: Optional[float] = None,
+                trail_trigger: Optional[float] = None, trail_initial: Optional[float] = None,
+                trail_step: Optional[float] = None):
+        """Operator console: apply risk/edge knobs to the LIVE config (the
+        engine + orchestrator share this object, so changes take effect on the
+        next evaluation). Leverage is also exported to the venue/brain env."""
+        c = ctx.scfg
+        applied: dict = {}
+        if perps_leverage is not None:
+            c.perps_leverage = max(1.0, float(perps_leverage)); applied["perps_leverage"] = c.perps_leverage
+        if perps_target_mult is not None:
+            c.perps_target_mult = max(1.0, float(perps_target_mult)); applied["perps_target_mult"] = c.perps_target_mult
+        if min_strength is not None:
+            c.min_signal_strength = max(0.0, min(1.0, float(min_strength))); applied["min_signal_strength"] = c.min_signal_strength
+        if regime_weighting is not None:
+            c.regime_weighting = bool(regime_weighting); applied["regime_weighting"] = c.regime_weighting
+        if trail_trigger is not None:
+            c.trailing.trigger_pct = max(0.0, float(trail_trigger)); applied["trail_trigger"] = c.trailing.trigger_pct
+        if trail_initial is not None:
+            c.trailing.initial_sl_pct = max(0.0, float(trail_initial)); applied["trail_initial"] = c.trailing.initial_sl_pct
+        if trail_step is not None:
+            c.trailing.step_pct = max(0.01, float(trail_step)); applied["trail_step"] = c.trailing.step_pct
+        c.export_runtime_env()
+        return {"ok": True, "applied": applied, "live": {
+            "perps_leverage": c.perps_leverage, "perps_target_mult": c.perps_target_mult,
+            "min_signal_strength": c.min_signal_strength, "regime_weighting": c.regime_weighting,
+            "trailing": {"trigger": c.trailing.trigger_pct, "initial": c.trailing.initial_sl_pct,
+                         "step": c.trailing.step_pct}}}
+
+    @app.post("/halt")
+    def halt(reason: str = "operator stop"):
+        """Operator stop: block NEW opens immediately. Existing positions keep
+        being managed/closed (the book can always be flattened). Clear with
+        POST /venue/resume."""
+        ctx.engine.halt(reason)
+        return {"trading_halted": ctx.engine.trading_halted, "halt_reason": ctx.engine.halt_reason}
+
+    @app.get("/attribution")
+    def attribution():
+        """P/L attribution by strategy, book, and macro regime — realized
+        (closed) + unrealized (open marks)."""
+        eng = ctx.engine; mkt = ctx.scfg.market_for; prices = ctx.prices
+        def row(): return {"trades": 0, "wins": 0, "realized": 0.0, "unrealized": 0.0, "open": 0}
+        by_strategy: dict = {}; by_book = {"spot": row(), "perp": row()}; by_regime: dict = {}
+        for t in eng.closed:
+            sname = t.position.meta.get("strategy", "reaction")
+            rg = t.position.meta.get("regime", "unknown")
+            for d in (by_strategy.setdefault(sname, row()), by_book[mkt(sname)], by_regime.setdefault(rg, row())):
+                d["trades"] += 1; d["wins"] += 1 if t.pnl_usd > 0 else 0; d["realized"] += t.pnl_usd
+        for p in eng.open_positions():
+            sname = p.meta.get("strategy", "reaction")
+            rg = p.meta.get("regime", "unknown")
+            u = p.unrealized_pnl_usd(prices.get(p.symbol, p.avg_entry))
+            for d in (by_strategy.setdefault(sname, row()), by_book[mkt(sname)], by_regime.setdefault(rg, row())):
+                d["unrealized"] += u; d["open"] += 1
+        def fin(g):
+            for d in g.values():
+                d["realized"] = round(d["realized"], 2); d["unrealized"] = round(d["unrealized"], 2)
+                d["net"] = round(d["realized"] + d["unrealized"], 2)
+                d["win_rate"] = round(d["wins"] / d["trades"] * 100, 1) if d["trades"] else 0.0
+            return g
+        return {"regime": ctx.orchestrator.last_regime,
+                "by_strategy": fin(by_strategy), "by_book": fin(by_book), "by_regime": fin(by_regime)}
 
     @app.post("/backtest/perf")
     def set_backtest_perf(fast_backtest: Optional[bool] = None,

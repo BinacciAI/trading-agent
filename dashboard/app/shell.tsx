@@ -19,6 +19,7 @@ function Icon({ name }: { name: string }) {
     strategies: (<><circle cx="6" cy="6" r="2.2" {...P} /><circle cx="6" cy="18" r="2.2" {...P} /><circle cx="18" cy="12" r="2.2" {...P} /><path d="M8 7l8 4M8 17l8-4" {...P} /></>),
     backtests: (<><path d="M3.5 12a8.5 8.5 0 1 0 2.7-6.2L3 8" {...P} /><path d="M3 3.5V8h4.5" {...P} /><path d="M12 8v4.2l3 1.8" {...P} /></>),
     settings: (<><path d="M4 7h9M17 7h3M4 17h3M11 17h9" {...P} /><circle cx="15" cy="7" r="2.2" {...P} /><circle cx="7" cy="17" r="2.2" {...P} /></>),
+    console: (<><rect x="3" y="3" width="18" height="18" rx="3" {...P} /><path d="M8 8v8M12 11v5M16 8v3" {...P} /><circle cx="8" cy="6.5" r="1.3" fill="currentColor" /><circle cx="12" cy="9.5" r="1.3" fill="currentColor" /><circle cx="16" cy="6.5" r="1.3" fill="currentColor" /></>),
   };
   return (
     <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
@@ -29,6 +30,7 @@ function Icon({ name }: { name: string }) {
 
 const NAV = [
   { ic: "command", label: "Command Center", href: "/" },
+  { ic: "console", label: "Console", href: "/console" },
   { ic: "competition", label: "Competition", href: "/competition" },
   { ic: "agents", label: "Agents", href: "/agents" },
   { ic: "signals", label: "Signals", href: "/signals" },
