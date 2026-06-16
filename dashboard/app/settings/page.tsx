@@ -19,6 +19,7 @@ type Cfg = {
   book_cap?: number; perp_strategies?: string[]; spot_strategies?: string[];
   credits: { per_day: number; per_month: number; breakdown: Record<string, number>; polled_symbols: number };
   cmc_key_set: boolean;
+  fast_backtest?: boolean; backtest_workers?: number; cpu_count?: number;
 };
 
 const MODE_BLURB: Record<string, string> = {
@@ -33,7 +34,32 @@ export default function Settings() {
   const [mode, setMode] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [fastBt, setFastBt] = useState(false);
+  const [workers, setWorkers] = useState(1);
+  const [perfMsg, setPerfMsg] = useState("");
   useEffect(() => { if (cfg?.risk?.risk_mode) setMode(cfg.risk.risk_mode); }, [cfg?.risk?.risk_mode]);
+  useEffect(() => {
+    if (cfg) { setFastBt(!!cfg.fast_backtest); setWorkers(cfg.backtest_workers ?? 1); }
+  }, [cfg?.fast_backtest, cfg?.backtest_workers]);
+
+  const cpu = Math.max(1, cfg?.cpu_count ?? 1);
+  const workerOpts = Array.from(new Set([1, 2, 4, 8, cpu].filter((w) => w >= 1 && w <= cpu))).sort((a, b) => a - b);
+
+  const setPerf = async (p: { fast?: boolean; workers?: number }) => {
+    setBusy(true); setPerfMsg("");
+    const qs = new URLSearchParams();
+    if (p.fast !== undefined) qs.set("fast_backtest", String(p.fast));
+    if (p.workers !== undefined) qs.set("workers", String(p.workers));
+    try {
+      const res = await fetch(`/agent/backtest/perf?${qs.toString()}`, { method: "POST" });
+      const j = await res.json();
+      if (j.ok) {
+        setFastBt(!!j.fast_backtest); setWorkers(j.backtest_workers);
+        setPerfMsg(`precompute ${j.fast_backtest ? "on" : "off"} · ${j.backtest_workers} worker${j.backtest_workers > 1 ? "s" : ""}`);
+      } else setPerfMsg(j.error || "update failed");
+    } catch { setPerfMsg("agent offline — cannot update"); }
+    setBusy(false);
+  };
 
   const r = cfg?.risk;
   const modes = cfg?.risk_modes?.filter((m) => m !== "custom") ?? ["conservative", "balanced", "aggressive"];
@@ -117,6 +143,44 @@ export default function Settings() {
         <div className="row"><span>Spot strategies ({cfg?.spot_strategies?.length ?? 0})</span>
           <span className="v">{(cfg?.spot_strategies ?? []).map((s) => s.replace(/_/g, " ")).join(", ") || "—"}</span></div>
       </div>
+
+      <h2 className="section">Backtest Performance</h2>
+      <p className="lede" style={{ marginBottom: 14 }}>
+        Speed-only controls — neither changes trading behaviour or backtest results (both are
+        gated by an equivalence harness that proves identical trades). <b style={{ color: "var(--text-primary)" }}>Precompute</b> computes
+        each causal indicator once per run instead of every bar; <b style={{ color: "var(--text-primary)" }}>sweep workers</b> fans
+        the 146-market universe sweep across processes (byte-identical to serial).
+      </p>
+      <div className="cards" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+        <div className="card">
+          <div className="lbl">Precompute (Fast Backtest)</div>
+          <div style={{ display: "flex", gap: 8, margin: "8px 0 2px" }}>
+            <button disabled={busy} className={fastBt ? "btn btn-primary" : "btn btn-secondary"}
+              onClick={() => setPerf({ fast: true })} style={{ minWidth: 64 }}>On</button>
+            <button disabled={busy} className={!fastBt ? "btn btn-primary" : "btn btn-secondary"}
+              onClick={() => setPerf({ fast: false })} style={{ minWidth: 64 }}>Off</button>
+          </div>
+          <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>
+            Causal-indicator precompute. Trade-identical; extra speed on every run.
+          </p>
+        </div>
+        <div className="card">
+          <div className="lbl">Sweep Workers</div>
+          <div style={{ display: "flex", gap: 6, margin: "8px 0 2px", flexWrap: "wrap" }}>
+            {workerOpts.map((w) => (
+              <button key={w} disabled={busy} className={workers === w ? "btn btn-primary" : "btn btn-secondary"}
+                onClick={() => setPerf({ workers: w })} style={{ minWidth: 46, padding: "9px 12px" }}>{w}</button>
+            ))}
+          </div>
+          <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>
+            Parallel processes for the universe sweep. This host has <b style={{ color: "var(--text-primary)" }}>{cpu}</b> core{cpu > 1 ? "s" : ""}; 1 = serial.
+          </p>
+        </div>
+      </div>
+      <p style={{ fontSize: 12, color: "var(--text-muted)", minHeight: 18, marginTop: 8 }}>
+        {perfMsg && <span className="badge cyan">{perfMsg}</span>}
+        {cpu <= 1 && <span style={{ marginLeft: perfMsg ? 8 : 0 }}>Single-core host — workers caps at 1; parallelism scales on a multi-core deploy.</span>}
+      </p>
 
       <h2 className="section">Runtime</h2>
       <div className="vault" style={{ maxWidth: 620 }}>

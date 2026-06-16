@@ -1,13 +1,13 @@
 "use client";
 
-import { useAgent, fmt } from "../useAgent";
+import { useAgent, fmt, isRealTx, shortTx } from "../useAgent";
 
 type Trace = {
   symbol: string; tf: string; ts: string; entered: boolean;
   gates: { step: string; passed: boolean; detail: string }[];
 };
 type VenueInfo = {
-  venue: string; testnet: boolean; wallet: string;
+  venue: string; testnet: boolean; wallet: string; explorer_tx_base?: string;
   log: { ts: string; action: string; symbol: string; ok: boolean; tx?: string; detail?: string; reason?: string }[];
 };
 
@@ -34,7 +34,12 @@ export default function Logs() {
                 <td><span className={l.action === "open" ? "badge gold" : "badge cyan"}>{l.action.toUpperCase()}</span></td>
                 <td style={{ color: "var(--text-primary)", fontWeight: 600 }}>{l.symbol}</td>
                 <td><span className={l.ok ? "badge green" : "badge red"}>{l.ok ? "OK" : "FAILED"}</span></td>
-                <td className="num" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis" }}>{l.tx || l.detail || l.reason || "—"}</td>
+                <td className="num" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {isRealTx(l.tx) ? (
+                    <a className="txlink" href={`${venue?.explorer_tx_base ?? "https://bscscan.com/tx/"}${l.tx}`}
+                       target="_blank" rel="noopener noreferrer" title={l.tx}>{shortTx(l.tx)} ↗</a>
+                  ) : (l.tx || l.detail || l.reason || "—")}
+                </td>
               </tr>
             ))}
           </tbody>

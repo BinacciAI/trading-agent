@@ -488,3 +488,51 @@ h2.section::after { content: ""; flex: 1; height: 1px;
   border: 1px solid var(--border-soft); border-radius: 5px; padding: 3px 8px;
 }
 .tok-chip:hover { border-color: var(--border-gold); color: var(--text-primary); }
+
+/* Warmup — agent intake coverage bar (Agents page) */
+.cov { display: flex; align-items: center; gap: 9px; width: 184px; }
+.cov-track {
+  position: relative; flex: 1; height: 7px; border-radius: 5px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--border-soft);
+}
+.cov-fill {
+  position: absolute; top: 0; left: 0; bottom: 0; border-radius: 5px;
+  background: var(--gradient-gold); transition: width 0.35s ease;
+}
+.cov.exceed .cov-fill { box-shadow: 0 0 10px rgba(245, 185, 63, 0.55); }
+/* intake ticks: one per timeframe, lit gold once that agent is warm */
+.cov-tick {
+  position: absolute; top: -3px; width: 1.5px; height: 13px; border-radius: 1px;
+  background: var(--text-muted); opacity: 0.45; transform: translateX(-0.75px);
+}
+.cov-tick.lit { background: var(--brand-gold); opacity: 0.95; }
+.cov-num {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted);
+  width: 40px; text-align: right; font-variant-numeric: tabular-nums;
+}
+.cov.exceed .cov-num { color: var(--brand-gold); }
+
+.tfpills { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.tfpill {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.04em;
+  padding: 1.5px 5px; border-radius: 4px; border: 1px solid var(--border-soft);
+  color: var(--text-muted);
+}
+.tfpill.warm { color: var(--brand-gold); border-color: var(--border-gold); background: rgba(245, 185, 63, 0.08); }
+.tfpill-count { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-secondary); margin-left: 3px; }
+
+/* On-chain tx explorer links (Command Center trades + execution log) */
+.txlink {
+  display: inline-block;
+  font-family: var(--font-mono, "JetBrains Mono", monospace);
+  font-size: 12px;
+  color: var(--brand-gold, #F5B93F);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: color .12s ease, border-color .12s ease;
+}
+.txlink:hover { color: var(--deep-gold, #C88A1A); border-bottom-color: currentColor; }
+.txcell { white-space: nowrap; }
+.txcell .txlink + .txlink { margin-left: 10px; }
+.muted { color: var(--text-dim, #6b7785); }

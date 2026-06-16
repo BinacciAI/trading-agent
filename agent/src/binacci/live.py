@@ -225,6 +225,10 @@ class LiveLoop:
             "reason": trade.reason,
             "ok": res.ok, "tx": res.tx_or_id, "detail": res.detail,
         })
+        if res.ok:
+            pos.meta["venue_close_tx"] = res.tx_or_id
+            if res.fill_price:
+                pos.meta["venue_close_fill"] = res.fill_price
         if not res.ok:
             log.error("venue close failed for %s: %s", pos.symbol, res.detail)
 
@@ -272,11 +276,20 @@ class LiveLoop:
     def warmup_info(self) -> dict:
         bars = {s: len(b.bars) for s, b in self.builders.items()}
         need = max(self.scfg.sims.extrema_window * 2 + 2, 60)
+        # Each agent needs `need` bars on a timeframe to be warm; in 1-minute
+        # bars that costs `need * tf.minutes` per timeframe. A market is fully
+        # warm for EVERY agent once its 1m history exceeds the deepest of these.
+        required_1m = {tf.value: need * tf.minutes for tf in self.live_tfs}
+        deepest = max(required_1m.values()) if required_1m else need
+        collected_min = min(bars.values()) if bars else 0
         return {
             "one_minute_bars": bars,
+            "need_bars": need,
+            "required_1m": required_1m,
+            "deepest_required_1m": deepest,
             "tradable_tfs": [
                 tf.value for tf in self.live_tfs
-                if min(bars.values() or [0]) >= need * tf.minutes
+                if collected_min >= need * tf.minutes
             ],
         }
 

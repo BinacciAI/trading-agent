@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useAgent, fmt } from "./useAgent";
+import { useAgent, fmt, isRealTx, shortTx } from "./useAgent";
 
 type Risk = { risk_mode: string; max_positions: number };
 type Status = {
@@ -10,13 +10,14 @@ type Status = {
   aggregate_drawdown_usd: number; kill_switch_fired: boolean; closed_trades: number;
   loop?: { markets?: number; risk_mode?: string; risk?: Risk; strategies?: string[];
     universe?: { markets?: number; candidates: number } };
+  explorer_tx_base?: string;
 };
 type Pos = {
   symbol: string; tf: string; side?: string; market?: string; strategy?: string; level_kind?: string; state: string;
   avg_entry: number; notional_usd: number; gain_pct: number; peak_gain_pct: number;
   stop_pct: number | null; target_pct: number; averaging_done: number; leverage?: number;
 };
-type Trade = { symbol: string; tf: string; side?: string; market?: string; strategy?: string; pnl_usd: number; reason: string; closed: string | null };
+type Trade = { symbol: string; tf: string; side?: string; market?: string; strategy?: string; pnl_usd: number; reason: string; closed: string | null; open_tx?: string; close_tx?: string };
 type Trace = { symbol: string; tf: string; ts: string; strategy?: string; entered: boolean;
   gates: { step: string; passed: boolean; detail: string }[] };
 type Strat = { active: string[]; open_positions_by_strategy: Record<string, number>;
@@ -81,6 +82,7 @@ export default function Page() {
   const pnl = realized + unreal;
   const wins = trades.filter((t) => t.pnl_usd > 0).length;
   const winRate = trades.length ? (wins / trades.length) * 100 : 0;
+  const base = status?.explorer_tx_base ?? "https://bscscan.com/tx/";
   const exposure = positions.reduce((a, p) => a + p.notional_usd, 0);
   const markets = status?.loop?.markets ?? status?.loop?.universe?.candidates ?? "—";
   const mode = status?.loop?.risk_mode ?? "—";
@@ -196,9 +198,9 @@ export default function Page() {
         <h2 className="section">Closed Trades</h2>
         <div className="tbl-wrap">
           <table>
-            <thead><tr><th>Market</th><th>Side</th><th>Book</th><th>Strategy</th><th>TF</th><th>Exit</th><th className="num">P/L</th><th className="num">Closed</th></tr></thead>
+            <thead><tr><th>Market</th><th>Side</th><th>Book</th><th>Strategy</th><th>TF</th><th>Exit</th><th className="num">P/L</th><th className="num">Closed</th><th>Tx</th></tr></thead>
             <tbody>
-              {trades.length === 0 && <tr><td colSpan={8} className="empty">No closed trades yet.</td></tr>}
+              {trades.length === 0 && <tr><td colSpan={9} className="empty">No closed trades yet.</td></tr>}
               {[...trades].reverse().slice(0, 20).map((t, i) => (
                 <tr key={i}>
                   <td className="mkt">{t.symbol}<span className="quote">/USDT</span></td>
@@ -209,6 +211,15 @@ export default function Page() {
                   <td><span className={t.reason === "take_profit" ? "badge green" : t.reason === "kill_switch" || t.reason === "hard_stop" ? "badge red" : "badge gold"}>{t.reason.replace(/_/g, " ").toUpperCase()}</span></td>
                   <td className={t.pnl_usd >= 0 ? "num pos" : "num neg"}>{t.pnl_usd >= 0 ? "+" : ""}{fmt(t.pnl_usd)}</td>
                   <td className="num dim">{t.closed ? new Date(t.closed).toLocaleString() : "—"}</td>
+                  <td className="txcell">
+                    {isRealTx(t.open_tx) && (
+                      <a className="txlink" href={`${base}${t.open_tx}`} target="_blank" rel="noopener noreferrer" title={`open ${t.open_tx}`}>open ↗</a>
+                    )}
+                    {isRealTx(t.close_tx) && (
+                      <a className="txlink" href={`${base}${t.close_tx}`} target="_blank" rel="noopener noreferrer" title={`close ${t.close_tx}`}>close ↗</a>
+                    )}
+                    {!isRealTx(t.open_tx) && !isRealTx(t.close_tx) && <span className="muted">—</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>

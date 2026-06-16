@@ -7,7 +7,13 @@ type Status = {
   loop?: {
     running: boolean; polls: number; last_poll: string | null;
     macro_fresh: boolean; venue: string; markets?: number;
-    warmup?: { tradable_tfs: string[]; one_minute_bars: Record<string, number> };
+    warmup?: {
+      tradable_tfs: string[];
+      one_minute_bars: Record<string, number>;
+      need_bars?: number;
+      required_1m?: Record<string, number>;
+      deepest_required_1m?: number;
+    };
     universe?: { candidates: number; verified_count: number | null };
   };
 };
@@ -37,7 +43,7 @@ export default function Agents() {
       <div className="toolbar">
         <span className={running ? "badge green" : "badge gray"}>{running ? "ALL SYSTEMS ACTIVE" : "STANDBY"}</span>
         <span className="badge cyan">{loop?.markets ?? loop?.universe?.candidates ?? "—"} MARKETS</span>
-        <span className="badge gold">{loop?.warmup?.tradable_tfs?.length ?? 0} TIMEFRAMES WARM</span>
+        <span className="badge gold">{loop?.warmup?.tradable_tfs?.length ?? 0}/{Object.keys(loop?.warmup?.required_1m ?? {}).length || 6} TIMEFRAMES WARM</span>
       </div>
 
       <h2 className="section">Analysis Agents — 5 Simulations</h2>
@@ -105,24 +111,73 @@ export default function Agents() {
         </div>
       </div>
 
-      <h2 className="section">Warmup — 1m Bars Collected Per Market</h2>
-      <div className="tbl-wrap">
-        <table>
-          <thead><tr><th>Market</th><th>1m Bars</th><th>Readiness</th></tr></thead>
-          <tbody>
-            {!loop?.warmup?.one_minute_bars && <tr><td colSpan={3}>connecting…</td></tr>}
-            {Object.entries(loop?.warmup?.one_minute_bars ?? {})
-              .sort((a, b) => b[1] - a[1]).map(([sym, bars]) => (
-              <tr key={sym}>
-                <td style={{ color: "var(--text-primary)", fontWeight: 600 }}>{sym}</td>
-                <td className="num">{bars}</td>
-                <td><span className={bars >= 84 ? "badge green" : "badge gray"}>
-                  {bars >= 84 ? "3M READY" : "WARMING"}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <h2 className="section">Warmup — Agent Intake Coverage</h2>
+      {(() => {
+        const w = loop?.warmup;
+        const req = w?.required_1m ?? {};
+        const tfs = Object.entries(req).sort((a, b) => a[1] - b[1]); // [tf, bars] asc
+        const deepest = w?.deepest_required_1m ?? (tfs.length ? tfs[tfs.length - 1][1] : 0);
+        const need = w?.need_bars ?? 60;
+        const largestTf = tfs.length ? tfs[tfs.length - 1][0] : "—";
+        const rows = Object.entries(w?.one_minute_bars ?? {}).sort((a, b) => b[1] - a[1]);
+        return (
+          <>
+            <p className="lede" style={{ marginBottom: 12 }}>
+              Each agent needs <b style={{ color: "var(--text-primary)" }}>{need} bars</b> of
+              context per timeframe. A market is fully warm only once its one-minute history
+              clears the <b style={{ color: "var(--text-primary)" }}>deepest</b> intake —{" "}
+              <b style={{ color: "var(--brand-gold)" }}>{deepest.toLocaleString()} bars</b> ({need} × {largestTf}).
+              Each tick below marks one timeframe&apos;s intake; the fill pushes past them as history accrues.
+            </p>
+            <div className="tbl-wrap">
+              <table>
+                <thead><tr>
+                  <th>Market</th><th className="num">1m Bars</th>
+                  <th>Coverage vs Deepest Intake</th><th>Timeframes Warm</th><th>Status</th>
+                </tr></thead>
+                <tbody>
+                  {!w?.one_minute_bars && <tr><td colSpan={5} className="empty">connecting…</td></tr>}
+                  {rows.map(([sym, bars]) => {
+                    const pct = deepest ? Math.min(bars / deepest, 1) * 100 : 0;
+                    const exceed = deepest > 0 && bars >= deepest;
+                    const mult = deepest ? bars / deepest : 0;
+                    const warm = tfs.filter(([, r]) => bars >= r).length;
+                    return (
+                      <tr key={sym}>
+                        <td style={{ color: "var(--text-primary)", fontWeight: 600 }}>{sym}</td>
+                        <td className="num">{bars.toLocaleString()}</td>
+                        <td>
+                          <div className={exceed ? "cov exceed" : "cov"}>
+                            <div className="cov-track">
+                              <div className="cov-fill" style={{ width: `${pct}%` }} />
+                              {tfs.map(([tf, r]) => (
+                                <span key={tf} className={bars >= r ? "cov-tick lit" : "cov-tick"}
+                                      style={{ left: `${Math.min(r / deepest, 1) * 100}%` }}
+                                      title={`${tf} · ${r.toLocaleString()} bars`} />
+                              ))}
+                            </div>
+                            <span className="cov-num">{exceed ? `×${mult.toFixed(1)}` : `${Math.round(pct)}%`}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <div className="tfpills">
+                            {tfs.map(([tf, r]) => (
+                              <span key={tf} className={bars >= r ? "tfpill warm" : "tfpill"}>{tf}</span>
+                            ))}
+                            <span className="tfpill-count">{warm}/{tfs.length}</span>
+                          </div>
+                        </td>
+                        <td><span className={exceed ? "badge green" : "badge gold"}>
+                          {exceed ? "ALL AGENTS WARM" : "WARMING"}</span></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        );
+      })()}
     </main>
   );
 }
