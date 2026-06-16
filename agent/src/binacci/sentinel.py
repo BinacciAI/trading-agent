@@ -14,7 +14,7 @@ import os
 import time
 from collections import deque
 
-_DEFAULT_STABLES = "USDT,USDC,DAI,TUSD,FDUSD,USDD,USD1,DUSD,USDX,EURI,XAUT"
+_DEFAULT_STABLES = "USDT,USDC,DAI,TUSD,FDUSD,USDD,USD1,DUSD,USDX"
 
 
 def _f(env: str, default: float) -> float:
@@ -43,7 +43,8 @@ class Sentinel:
         for sym, px in prices.items():
             if not px or px <= 0:
                 continue
-            if sym.upper() in self.stables and abs(px - 1.0) * 100.0 > self.depeg_pct:
+            if (sym.upper() in self.stables and 0.5 < px < 1.5
+                    and abs(px - 1.0) * 100.0 > self.depeg_pct):
                 new.append({"ts": now, "type": "depeg", "symbol": sym, "detail": f"${px:.4f} off peg"})
             prev = self._last.get(sym)
             if prev and prev > 0:
