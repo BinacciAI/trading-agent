@@ -181,8 +181,15 @@ class LiveLoop:
         #: Liquidity-verified symbols (None until verification completes).
         #: Unverified symbols are analyzed but never executed on-chain.
         self.verified: Optional[dict[str, dict]] = None
+        #: Live-funds safety state (surfaced to the dashboard).
+        self.preflight_ok: Optional[bool] = None
+        self.preflight_detail: str = ""
+        self.reconcile_state: str = "n/a"   # n/a | clean | pending_ack | mismatch
+        self.reconcile_detail: str = ""
+        self.onchain_balance_usd: Optional[float] = None
         if rcfg.venue != "paper":
             self.orch.on_open = self._venue_open
+            self.orch.on_average = self._venue_average
             self.orch.on_close = self._venue_close
 
     def _venue_for(self, pos) -> Venue:
@@ -191,46 +198,118 @@ class LiveLoop:
 
     # ---------------- venue hooks ----------------
 
+    def _with_retry(self, fn):
+        """Run a venue call, retrying transient failures up to venue_max_retries.
+        Returns the first ok result, else the last failed result."""
+        attempts = max(0, int(self.rcfg.venue_max_retries)) + 1
+        last = None
+        for i in range(attempts):
+            res = fn()
+            if res.ok:
+                return res
+            last = res
+            if i + 1 < attempts:
+                log.warning("venue attempt %d/%d failed: %s", i + 1, attempts, res.detail)
+        return last
+
     def _venue_open(self, pos) -> None:
         if self.verified is not None and pos.symbol not in self.verified:
             self.venue_log.append({
                 "ts": datetime.now(timezone.utc).isoformat(), "action": "open",
                 "symbol": pos.symbol, "ok": False,
-                "detail": "blocked: symbol not liquidity-verified",
+                "detail": "blocked: symbol not liquidity-verified — rolled back",
             })
+            self.engine.rollback_open(pos)  # never leave a phantom on the books
             return
         chain_sym = self.scfg.chain_symbol(pos.symbol)
         market = self.scfg.market_for(pos.meta.get("strategy", "reaction"))
-        res = self._venue_for(pos).place_limit(chain_sym, pos.side, pos.avg_entry, pos.notional_usd)
+        res = self._with_retry(lambda: self._venue_for(pos).place_limit(
+            chain_sym, pos.side, pos.avg_entry, pos.notional_usd))
         self.venue_log.append({
             "ts": datetime.now(timezone.utc).isoformat(), "action": "open",
             "symbol": pos.symbol, "chain_symbol": chain_sym, "market": market,
             "strategy": pos.meta.get("strategy", "reaction"), "side": pos.side.value,
             "notional_usd": round(pos.notional_usd, 2),
-            "ok": res.ok, "tx": res.tx_or_id, "detail": res.detail,
+            "ok": res.ok, "tx": res.tx_or_id, "status": res.status, "detail": res.detail,
         })
-        if res.ok and res.fill_price:
-            pos.meta["venue_fill_price"] = res.fill_price
+        if res.ok:
             pos.meta["venue_tx"] = res.tx_or_id
-        if not res.ok:
-            log.error("venue open failed for %s: %s", pos.symbol, res.detail)
+            pos.meta["venue_status"] = res.status
+            if res.fill_price:
+                pos.meta["venue_fill_price"] = res.fill_price
+                # blocker 2: book P&L on the REAL fill, not the limit level
+                self.engine.reconcile_open_fill(pos, res.fill_price)
+            if res.status == "unconfirmed":
+                pos.meta["unconfirmed_open"] = True
+                log.warning("open tx unconfirmed for %s: %s (kept; reconcile later)",
+                            pos.symbol, res.tx_or_id)
+        else:
+            # blocker 1: engine booked it, chain has nothing — remove the phantom
+            self.engine.rollback_open(pos)
+            self.venue_log.append({
+                "ts": datetime.now(timezone.utc).isoformat(), "action": "rollback",
+                "symbol": pos.symbol, "ok": False,
+                "detail": f"open failed -> engine position rolled back: {res.detail}"[:300],
+            })
+            log.error("venue open failed for %s: %s — rolled back engine position",
+                      pos.symbol, res.detail)
+
+    def _venue_average(self, pos) -> None:
+        """Mirror an averaging add on-chain (same books==chain discipline)."""
+        if self.verified is not None and pos.symbol not in self.verified:
+            self.engine.rollback_average(pos)
+            return
+        if not pos.fills or not pos.fills[-1].tag.startswith("avg"):
+            return
+        add = pos.fills[-1]
+        res = self._with_retry(lambda: self._venue_for(pos).place_limit(
+            self.scfg.chain_symbol(pos.symbol), pos.side, add.price, add.notional_usd))
+        self.venue_log.append({
+            "ts": datetime.now(timezone.utc).isoformat(), "action": "average",
+            "symbol": pos.symbol, "notional_usd": round(add.notional_usd, 2),
+            "ok": res.ok, "tx": res.tx_or_id, "status": res.status, "detail": res.detail,
+        })
+        if res.ok:
+            pos.meta.setdefault("avg_txs", []).append(res.tx_or_id)
+            if res.fill_price:
+                self.engine.reconcile_average_fill(pos, res.fill_price)
+        else:
+            self.engine.rollback_average(pos)
+            log.error("venue average failed for %s: %s — rolled back add",
+                      pos.symbol, res.detail)
 
     def _venue_close(self, trade) -> None:
         pos = trade.position
-        res = self._venue_for(pos).market_close(self.scfg.chain_symbol(pos.symbol), pos.side,
-                                                abs(pos.fills[-1].notional_usd))
+        res = self._with_retry(lambda: self._venue_for(pos).market_close(
+            self.scfg.chain_symbol(pos.symbol), pos.side, abs(pos.fills[-1].notional_usd)))
         self.venue_log.append({
             "ts": datetime.now(timezone.utc).isoformat(), "action": "close",
             "symbol": pos.symbol, "market": pos.meta.get("market", "spot"),
             "reason": trade.reason,
-            "ok": res.ok, "tx": res.tx_or_id, "detail": res.detail,
+            "ok": res.ok, "tx": res.tx_or_id, "status": res.status, "detail": res.detail,
         })
         if res.ok:
             pos.meta["venue_close_tx"] = res.tx_or_id
+            pos.meta["venue_close_status"] = res.status
             if res.fill_price:
                 pos.meta["venue_close_fill"] = res.fill_price
-        if not res.ok:
-            log.error("venue close failed for %s: %s", pos.symbol, res.detail)
+                # blocker 2: realized P&L from the REAL exit fill
+                self.engine.reconcile_close_fill(trade, res.fill_price)
+            if res.status == "unconfirmed":
+                pos.meta["unconfirmed_close"] = True
+                log.warning("close tx unconfirmed for %s: %s", pos.symbol, res.tx_or_id)
+        else:
+            # blocker 1: engine thinks flat, chain still holds the position.
+            # Revert the close so books == chain, halt new opens, alert.
+            self.engine.revert_close(trade)
+            self.engine.halt(f"close failed on-chain: {pos.symbol} — {res.detail[:100]}")
+            self.venue_log.append({
+                "ts": datetime.now(timezone.utc).isoformat(), "action": "halt",
+                "symbol": pos.symbol, "ok": False,
+                "detail": "close failed -> reverted close + HALTED new opens (needs attention)",
+            })
+            log.critical("venue close failed for %s: %s — reverted + halted new opens",
+                         pos.symbol, res.detail)
 
     # ---------------- status ----------------
 
@@ -306,6 +385,15 @@ class LiveLoop:
             "warmup": self.warmup_info(),
             "venue": self.rcfg.venue,
             "venue_log_tail": self.venue_log[-5:],
+            "preflight_ok": self.preflight_ok,
+            "preflight_detail": self.preflight_detail,
+            "trading_halted": self.engine.trading_halted,
+            "halt_reason": self.engine.halt_reason,
+            "reconcile_state": self.reconcile_state,
+            "reconcile_detail": self.reconcile_detail,
+            "onchain_balance_usd": self.onchain_balance_usd,
+            "mev_protect": self.rcfg.mev_protect,
+            "confirm_receipts": self.rcfg.confirm_receipts,
             "strategies": [s.name for s in self.orch.strategies],
             "risk_mode": self.scfg.risk_mode.value,
             "risk": self.scfg.risk_summary(),
@@ -354,6 +442,89 @@ class LiveLoop:
                 log.info("warm restart: engine state restored from volume")
         except Exception:  # pragma: no cover
             log.exception("engine state restore failed")
+
+    # ---------------- live-funds gating (preflight + boot reconcile) ----------------
+
+    def _live_venues(self) -> list:
+        out: list = []
+        for v in (self.spot_venue, self.perp_venue):
+            if v is not None and getattr(v, "name", "paper") != "paper" and v not in out:
+                out.append(v)
+        return out
+
+    def run_preflight(self) -> bool:
+        """Blocker 4: gate live trading on venue preflight (CLI/auth/wallet/net).
+        On failure, HALT new opens with the reason. Returns True iff all ok."""
+        if self.rcfg.venue == "paper":
+            self.preflight_ok, self.preflight_detail = True, "paper"
+            return True
+        problems: list[str] = []
+        for v in self._live_venues():
+            pf = getattr(v, "preflight", None)
+            if pf is None:
+                continue
+            ok, why = pf()
+            if not ok:
+                problems.append(f"{getattr(v, 'name', '?')}: {why}")
+        if problems:
+            self.preflight_ok = False
+            self.preflight_detail = "; ".join(problems)
+            self.engine.halt(f"preflight failed: {self.preflight_detail}")
+            log.critical("PREFLIGHT FAILED — new opens halted: %s", self.preflight_detail)
+            return False
+        self.preflight_ok, self.preflight_detail = True, "ready"
+        log.info("preflight ok on %s", self.rcfg.venue)
+        return True
+
+    def reconcile_on_boot(self) -> None:
+        """Blocker 5: reconcile restored engine state against the chain. Records
+        on-chain balance; if restored OPEN positions can't be independently
+        verified, HALT new opens until a human acks — unless reconcile_auto_ack.
+        We never silently trust a checkpoint with real funds on the line."""
+        if self.rcfg.venue == "paper":
+            self.reconcile_state = "n/a"
+            return
+        restored_open = self.engine.open_positions()
+        onchain_positions = None
+        for v in self._live_venues():
+            snap = getattr(v, "snapshot_onchain", lambda: {})() or {}
+            bal = snap.get("balance") or {}
+            try:
+                tot = float(bal.get("totalUsd") or bal.get("totalUSD") or 0.0)
+                if tot:
+                    self.onchain_balance_usd = tot
+            except (TypeError, ValueError):
+                pass
+            if snap.get("positions") is not None:
+                onchain_positions = snap["positions"]
+        if not restored_open:
+            self.reconcile_state = "clean"
+            self.reconcile_detail = "no restored open positions"
+            return
+        detail = (f"{len(restored_open)} restored open position(s): "
+                  + ", ".join(sorted({p.symbol for p in restored_open})))
+        if onchain_positions is not None:
+            detail += " | chain positions surface available"
+        if self.rcfg.reconcile_auto_ack:
+            self.reconcile_state = "clean"
+            self.reconcile_detail = detail + " (auto-acked)"
+            log.warning("boot reconcile auto-acked: %s", detail)
+            return
+        self.reconcile_state = "pending_ack"
+        self.reconcile_detail = detail
+        self.engine.halt("boot reconcile: restored positions need human ack")
+        log.critical("BOOT RECONCILE PENDING — new opens halted until ack: %s", detail)
+
+    def ack_reconcile(self) -> dict:
+        """Human ack that restored positions match the chain — clears the halt."""
+        if self.reconcile_state == "pending_ack":
+            self.reconcile_state = "clean"
+            self.reconcile_detail += " (acked)"
+            if self.engine.halt_reason.startswith("boot reconcile"):
+                self.engine.resume()
+        return {"reconcile_state": self.reconcile_state,
+                "trading_halted": self.engine.trading_halted,
+                "halt_reason": self.engine.halt_reason}
 
     # ---------------- universe verification ----------------
 
@@ -452,6 +623,9 @@ class LiveLoop:
             return
         self.cmc = CMCClient(self.rcfg)
         self._restore()
+        if self.rcfg.venue != "paper":
+            self.run_preflight()      # blocker 4: gate on wallet/auth/net
+            self.reconcile_on_boot()  # blocker 5: reconcile vs chain, fail-safe
         self.started_at = datetime.now(timezone.utc)
         log.info("live loop started: %d candidates, %d strategies on %s",
                  len(self.scfg.symbols), len(self.orch.strategies),

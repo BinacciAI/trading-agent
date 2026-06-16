@@ -19,6 +19,8 @@ import json
 import logging
 import shutil
 import subprocess
+import time
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional, Protocol
@@ -36,6 +38,47 @@ class OrderResult:
     tx_or_id: str = ""
     fill_price: float = 0.0
     detail: str = ""
+    #: On-chain receipt outcome once verified: "" (not checked / paper),
+    #: "confirmed" (mined, status 1), "reverted" (mined, status 0),
+    #: "unconfirmed" (submitted but receipt not seen before timeout).
+    status: str = ""
+    confirmed: bool = False
+
+
+def confirm_receipt_via_rpc(tx_hash: str, rpc_url: str, timeout_s: float = 75.0,
+                            poll_s: float = 3.0) -> str:
+    """Poll ``eth_getTransactionReceipt`` until the tx is mined or we time out.
+
+    Returns "confirmed" (receipt status 0x1), "reverted" (status 0x0), or
+    "unconfirmed" (no receipt within the window / RPC unreachable). Pure stdlib
+    — no web3 dependency. Never raises.
+    """
+    if not (tx_hash and tx_hash.startswith("0x") and rpc_url):
+        return "unconfirmed"
+    deadline = time.monotonic() + max(1.0, timeout_s)
+    payload = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "eth_getTransactionReceipt",
+        "params": [tx_hash],
+    }).encode()
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(
+                rpc_url, data=payload,
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                body = json.loads(r.read().decode())
+            result = body.get("result")
+            if result:  # receipt present -> mined
+                status = str(result.get("status", "")).lower()
+                if status in ("0x1", "1"):
+                    return "confirmed"
+                if status in ("0x0", "0"):
+                    return "reverted"
+                return "confirmed"  # pre-Byzantium receipts have no status field
+        except Exception:  # network blip — keep polling until deadline
+            pass
+        time.sleep(max(0.5, poll_s))
+    return "unconfirmed"
 
 
 class Venue(Protocol):
@@ -117,9 +160,12 @@ class TwakCLI:
                         "--slippage", str(slippage_pct), "--quote-only")
 
     def swap(self, frm: str, to: str, usd: float, chain: str = "bsc",
-             slippage_pct: float = 0.5) -> dict:
-        return self.run("swap", frm, to, "--chain", chain, "--usd", f"{usd:.2f}",
-                        "--slippage", str(slippage_pct))
+             slippage_pct: float = 0.5, private: bool = False) -> dict:
+        args = ["swap", frm, to, "--chain", chain, "--usd", f"{usd:.2f}",
+                "--slippage", str(slippage_pct)]
+        if private:
+            args.append("--private")  # MEV-protected relay (build-dependent)
+        return self.run(*args)
 
     def balance(self, chain: str = "bsc") -> dict:
         return self.run("wallet", "balance", "--chain", chain)
@@ -135,12 +181,22 @@ class TwakCLI:
 
     # ---- PancakeSwap perpetuals (long & short, self-custody) ----
     def perps_open(self, symbol: str, direction: str, usd: float,
-                   leverage: float = 2.0, chain: str = "bsc") -> dict:
-        return self.run("perps", "open", symbol, "--side", direction,
-                        "--usd", f"{usd:.2f}", "--leverage", str(leverage), "--chain", chain)
+                   leverage: float = 2.0, chain: str = "bsc",
+                   private: bool = False) -> dict:
+        args = ["perps", "open", symbol, "--side", direction,
+                "--usd", f"{usd:.2f}", "--leverage", str(leverage), "--chain", chain]
+        if private:
+            args.append("--private")
+        return self.run(*args)
 
     def perps_close(self, symbol: str, chain: str = "bsc") -> dict:
         return self.run("perps", "close", symbol, "--chain", chain)
+
+    def perps_positions(self, chain: str = "bsc") -> dict:
+        """Best-effort list of open on-chain perp positions for reconciliation.
+        Builds without a positions surface return an ``error`` and the caller
+        treats positions as unverifiable (fail-safe)."""
+        return self.run("perps", "positions", "--chain", chain)
 
     def perps_mark(self, symbol: str, chain: str = "bsc") -> dict:
         """Live on-chain perp MARK price for a symbol (the price the perp
@@ -180,21 +236,39 @@ class PancakeSpotVenue:
             return False, "swaps unsupported on bsctestnet — set BINACCI_USE_TESTNET=false"
         return True, "ready"
 
+    def _rpc(self) -> str:
+        return self.rcfg.bsc_testnet_rpc if self.rcfg.use_testnet else self.rcfg.bsc_rpc
+
+    def _confirm(self, tx: str) -> tuple[str, bool]:
+        """Verify an on-chain receipt when enabled. Returns (status, confirmed)."""
+        if not self.rcfg.confirm_receipts or not (tx and tx.startswith("0x")):
+            return "", False
+        st = confirm_receipt_via_rpc(tx, self._rpc(),
+                                     timeout_s=self.rcfg.receipt_timeout_s,
+                                     poll_s=self.rcfg.receipt_poll_s)
+        return st, st == "confirmed"
+
     def place_limit(self, symbol: str, side: Side, price: float, notional_usd: float) -> OrderResult:
         if side is not Side.LONG:
             return OrderResult(ok=False, venue=self.name, detail="spot venue is long-only")
         ok, why = self.preflight()
         if not ok:
             return OrderResult(ok=False, venue=self.name, detail=f"preflight: {why}")
-        res = self.twak.swap(self.quote, symbol, usd=notional_usd,
-                             chain="bsc", slippage_pct=self.max_slippage_pct)
+        res = self.twak.swap(self.quote, symbol, usd=notional_usd, chain="bsc",
+                             slippage_pct=self.rcfg.spot_slippage_pct,
+                             private=self.rcfg.mev_protect)
         if res.get("error"):
             log.error("pancake buy failed: %s", res)
             return OrderResult(ok=False, venue=self.name, detail=str(res.get("error"))[:300])
+        tx = str(res.get("txHash") or res.get("hash") or res.get("transactionHash") or "")
+        st, confirmed = self._confirm(tx)
+        if st == "reverted":
+            return OrderResult(ok=False, venue=self.name, tx_or_id=tx, status=st,
+                               detail="tx reverted on-chain")
         return OrderResult(
-            ok=True, venue=self.name,
-            tx_or_id=str(res.get("txHash") or res.get("hash") or res.get("transactionHash") or ""),
+            ok=True, venue=self.name, tx_or_id=tx,
             fill_price=float(res.get("executionPrice") or res.get("price") or price),
+            status=st or "submitted", confirmed=confirmed,
             detail="swap executed on level touch",
         )
 
@@ -202,13 +276,25 @@ class PancakeSpotVenue:
         ok, why = self.preflight()
         if not ok:
             return OrderResult(ok=False, venue=self.name, detail=f"preflight: {why}")
-        res = self.twak.swap(symbol, self.quote, usd=notional_usd,
-                             chain="bsc", slippage_pct=self.max_slippage_pct * 1.6)
+        res = self.twak.swap(symbol, self.quote, usd=notional_usd, chain="bsc",
+                             slippage_pct=self.rcfg.spot_slippage_pct * self.rcfg.close_slippage_mult,
+                             private=self.rcfg.mev_protect)
         if res.get("error"):
             log.error("pancake close failed: %s", res)
             return OrderResult(ok=False, venue=self.name, detail=str(res.get("error"))[:300])
-        return OrderResult(ok=True, venue=self.name,
-                           tx_or_id=str(res.get("txHash") or res.get("hash") or ""))
+        tx = str(res.get("txHash") or res.get("hash") or "")
+        st, confirmed = self._confirm(tx)
+        if st == "reverted":
+            return OrderResult(ok=False, venue=self.name, tx_or_id=tx, status=st,
+                               detail="close tx reverted on-chain")
+        return OrderResult(ok=True, venue=self.name, tx_or_id=tx,
+                           fill_price=float(res.get("executionPrice") or res.get("price") or 0.0),
+                           status=st or "submitted", confirmed=confirmed)
+
+    def snapshot_onchain(self) -> dict:
+        """Best-effort on-chain view for boot reconciliation (spot = balances)."""
+        bal = self.twak.balance("bsc")
+        return {"ok": not bool(bal.get("error")), "balance": bal, "positions": None}
 
     def balance_usd(self) -> float:
         res = self.twak.balance("bsc")
@@ -248,20 +334,37 @@ class PerpsVenue:
             return False, "perps need mainnet — set BINACCI_USE_TESTNET=false"
         return True, "ready"
 
+    def _rpc(self) -> str:
+        return self.rcfg.bsc_testnet_rpc if self.rcfg.use_testnet else self.rcfg.bsc_rpc
+
+    def _confirm(self, tx: str) -> tuple[str, bool]:
+        if not self.rcfg.confirm_receipts or not (tx and tx.startswith("0x")):
+            return "", False
+        st = confirm_receipt_via_rpc(tx, self._rpc(),
+                                     timeout_s=self.rcfg.receipt_timeout_s,
+                                     poll_s=self.rcfg.receipt_poll_s)
+        return st, st == "confirmed"
+
     def place_limit(self, symbol: str, side: Side, price: float, notional_usd: float) -> OrderResult:
         ok, why = self.preflight()
         if not ok:
             return OrderResult(ok=False, venue=self.name, detail=f"preflight: {why}")
         direction = "long" if side is Side.LONG else "short"
         lev = self._leverage()
-        res = self.twak.perps_open(symbol, direction, usd=notional_usd, leverage=lev)
+        res = self.twak.perps_open(symbol, direction, usd=notional_usd, leverage=lev,
+                                   private=self.rcfg.mev_protect)
         if res.get("error"):
             log.error("perps open failed: %s", res)
             return OrderResult(ok=False, venue=self.name, detail=str(res.get("error"))[:300])
+        tx = str(res.get("txHash") or res.get("hash") or res.get("positionId") or "")
+        st, confirmed = self._confirm(tx)
+        if st == "reverted":
+            return OrderResult(ok=False, venue=self.name, tx_or_id=tx, status=st,
+                               detail="perp open reverted on-chain")
         return OrderResult(
-            ok=True, venue=self.name,
-            tx_or_id=str(res.get("txHash") or res.get("hash") or res.get("positionId") or ""),
+            ok=True, venue=self.name, tx_or_id=tx,
             fill_price=float(res.get("entryPrice") or res.get("price") or price),
+            status=st or "submitted", confirmed=confirmed,
             detail=f"{direction} {lev:.0f}x perp opened on level touch",
         )
 
@@ -273,8 +376,22 @@ class PerpsVenue:
         if res.get("error"):
             log.error("perps close failed: %s", res)
             return OrderResult(ok=False, venue=self.name, detail=str(res.get("error"))[:300])
-        return OrderResult(ok=True, venue=self.name,
-                           tx_or_id=str(res.get("txHash") or res.get("hash") or ""))
+        tx = str(res.get("txHash") or res.get("hash") or "")
+        st, confirmed = self._confirm(tx)
+        if st == "reverted":
+            return OrderResult(ok=False, venue=self.name, tx_or_id=tx, status=st,
+                               detail="perp close reverted on-chain")
+        return OrderResult(ok=True, venue=self.name, tx_or_id=tx,
+                           fill_price=float(res.get("closePrice") or res.get("exitPrice")
+                                            or res.get("price") or 0.0),
+                           status=st or "submitted", confirmed=confirmed)
+
+    def snapshot_onchain(self) -> dict:
+        bal = self.twak.balance("bsc")
+        pos = self.twak.perps_positions("bsc")
+        # positions surface is build-dependent; None means "unverifiable".
+        positions = None if (not isinstance(pos, dict) or pos.get("error")) else pos
+        return {"ok": not bool(bal.get("error")), "balance": bal, "positions": positions}
 
     def mark_price(self, symbol: str) -> Optional[float]:
         """Live on-chain perp mark for ``symbol``, or None if unavailable.
