@@ -162,6 +162,13 @@ export default function Page() {
           <div className="card"><div className="lbl">Closed Trades</div><div className="val">{status?.closed_trades ?? 0}</div></div>
         </div>
 
+        {(status as any)?.books && (() => { const bk = (status as any).books; return (
+          <div className="statline" style={{ marginTop: 12 }}>
+            <span>SPOT <b className="pos">{bk.spot.open} long</b> · <b className={bk.spot.realized >= 0 ? "pos" : "neg"}>{bk.spot.realized >= 0 ? "+" : ""}{fmt(bk.spot.realized)}</b></span>
+            <span>PERPS <b>{bk.perp.open} open</b> · <b className="pos">{bk.perp.long}L</b> / <b className="neg">{bk.perp.short}S</b> · <b className={bk.perp.realized >= 0 ? "pos" : "neg"}>{bk.perp.realized >= 0 ? "+" : ""}{fmt(bk.perp.realized)}</b></span>
+          </div>
+        ); })()}
+
         {/* Strategy performance strip */}
         <h2 className="section">Strategy Performance</h2>
         <div className="strip">

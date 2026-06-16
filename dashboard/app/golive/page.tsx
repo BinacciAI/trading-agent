@@ -17,6 +17,13 @@ export default function GoLive() {
     catch { setPf("agent offline"); }
   };
   const isLive = g.mode === "LIVE";
+  const [reg, setReg] = useState("");
+  const register = async () => {
+    setReg("registering…");
+    try { const j = await (await fetch("/agent/compete/register", { method: "POST" })).json();
+      setReg(j.ok || j.registered ? "registered on-chain" : (j.detail || j.error || "see /compete")); }
+    catch { setReg("agent offline"); }
+  };
 
   return (
     <main className="main">
@@ -69,6 +76,13 @@ TWAK_ACCESS_ID / TWAK_HMAC_SECRET / TWAK_WALLET_PASSWORD
       <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 18 }}>
         <button className="btn btn-secondary" onClick={runPreflight}>Run venue preflight</button>
         {pf && <span className={pf.includes("OK") ? "badge green" : pf === "running…" ? "badge gold" : "badge red"}>{pf}</span>}
+      </div>
+
+      <h2 className="section">Track-1 Competition</h2>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 18 }}>
+        <button className="btn btn-secondary" onClick={register}>Register agent on-chain</button>
+        {reg && <span className={reg.includes("registered") ? "badge green" : reg === "registering…" ? "badge gold" : "badge gray"}>{reg}</span>}
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Records the wallet on the BNB×CMC competition contract.</span>
       </div>
 
       {(g.warnings ?? []).map((w, i) => (

@@ -30,23 +30,13 @@ function Icon({ name }: { name: string }) {
 
 type NavItem = { section: string } | { ic: string; label: string; href: string };
 const NAV: NavItem[] = [
-  { section: "Overview" },
-  { ic: "command", label: "Command Center", href: "/" },
-  { section: "Markets" },
-  { ic: "signals", label: "Signals", href: "/signals" },
-  { ic: "agents", label: "Agents", href: "/agents" },
-  { ic: "memory", label: "Market Memory", href: "/memory" },
-  { section: "Execution" },
-  { ic: "logs", label: "Execution Logs", href: "/logs" },
-  { ic: "risk", label: "Risk Vault", href: "/risk" },
-  { section: "Research" },
-  { ic: "strategies", label: "Strategies", href: "/strategies" },
-  { ic: "backtests", label: "Backtests", href: "/backtests" },
-  { section: "System" },
-  { ic: "competition", label: "Competition", href: "/competition" },
+  { section: "Monitor" },
+  { ic: "command", label: "Terminal", href: "/" },
+  { ic: "strategies", label: "Swarm", href: "/strategies" },
+  { section: "Operate" },
+  { ic: "settings", label: "Controls", href: "/settings" },
   { ic: "risk", label: "Go Live", href: "/golive" },
-  { ic: "settings", label: "Settings", href: "/settings" },
-];
+]
 
 export default function Shell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
