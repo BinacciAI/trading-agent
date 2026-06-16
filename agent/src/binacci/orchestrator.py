@@ -197,13 +197,12 @@ class Orchestrator:
         # is a guaranteed loser on a live wallet. (Gas is fixed $, so it bites
         # hardest on small notional — size up to fix it.)
         if self.cfg.min_edge_gate:
-            from .fees import fee_model
+            from .routing import execution_router
             mkt = self.cfg.market_for(strat.name)
             sm = self.cfg.regime_size_mult(regime, strat.name)
             margin = self.engine.entry_notional_usd() * sm
             notional = margin * (self.cfg.perps_leverage if mkt == "perp" else 1.0)
-            fm = fee_model()
-            be = fm.breakeven_move_pct(mkt) + (fm.gas_usd * 2 / notional * 100 if notional > 0 else 999.0)
+            be = execution_router().breakeven_move_pct(mkt, notional, symbol)
             if target < be:
                 trace.add(GateStep.LEVEL, False, f"target {target:.2f}% < fee breakeven {be:.2f}%")
                 self._record(trace)

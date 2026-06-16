@@ -24,6 +24,7 @@ from typing import Optional
 
 from .config import StrategyConfig, Timeframe
 from .fees import fee_model
+from .routing import execution_router
 from .models import (
     EntrySignal,
     Fill,
@@ -63,6 +64,7 @@ class ExecutionEngine:
         self.kill_switch_fired: bool = False
         import os as _os
         self.fees = fee_model()
+        self.router = execution_router()  # execution-quality agent (V3 routing + impact)
         #: book realized P/L net of estimated on-chain fees (swap/perp/gas) even
         #: in paper, so the displayed edge is what a live wallet would actually
         #: keep. Disable with BINACCI_SIMULATE_FEES=false to see gross.
@@ -225,7 +227,7 @@ class ExecutionEngine:
             market = self.cfg.market_for(pos.meta.get("strategy", "reaction"))
             lev = float(pos.meta.get("leverage", 1.0) or 1.0)
             hours = ((ts - pos.opened_ts).total_seconds() / 3600.0) if pos.opened_ts else 0.0
-            fees = self.fees.position_roundtrip_usd(market, pos.notional_usd, lev, hours)
+            fees = self.router.roundtrip_cost_usd(market, pos.notional_usd, lev, hours, pos.symbol)
         pnl = gross - fees
         pos.fills.append(Fill(ts=ts, price=price, qty=-pos.qty, notional_usd=-pos.notional_usd, tag="exit"))
         pos.state = PositionState.CLOSED

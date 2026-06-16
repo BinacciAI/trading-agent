@@ -377,9 +377,10 @@ def build_app():
             "realized": {"gross_usd": round(gross, 2), "fees_usd": round(paid, 2), "net_usd": round(net, 2),
                          "fee_drag_pct_of_gross": round(paid / gross * 100, 1) if gross > 0 else None},
             "breakeven_move_pct_incl_gas": {
-                "spot": round(fm.breakeven_move_pct("spot") + fm.gas_usd * 2 / max(margin, 1e-9) * 100, 3),
-                "perp": round(fm.breakeven_move_pct("perp") + fm.gas_usd * 2 / max(notional_perp, 1e-9) * 100, 3),
+                "spot": round(__import__("binacci.routing", fromlist=["execution_router"]).execution_router().breakeven_move_pct("spot", margin, "BNB"), 3),
+                "perp": round(__import__("binacci.routing", fromlist=["execution_router"]).execution_router().breakeven_move_pct("perp", notional_perp, "BNB"), 3),
             },
+            "routing": __import__("binacci.routing", fromlist=["execution_router"]).execution_router().summary(ctx.rcfg.deposit_usd, ctx.scfg.margin.entry_pct_of_deposit, ctx.scfg.perps_leverage),
             "note": "Gas is a fixed $ per action, so it dominates on small notional. "
                     "Breakeven falls as deposit/position size rises.",
         }
