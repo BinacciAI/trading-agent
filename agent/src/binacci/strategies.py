@@ -69,6 +69,7 @@ class Strategy:
 
     def __init__(self, cfg: StrategyConfig):
         self.cfg = cfg
+        self.funding_provider = lambda: {}  # symbol -> funding %% (set by orchestrator)
 
     def propose(self, symbol: str, tf: Timeframe, df: pd.DataFrame,
                 side: Side = Side.LONG) -> Optional[StrategyProposal]:
@@ -427,6 +428,40 @@ class LiquiditySweepStrategy(Strategy):
         )
 
 
+class FundingCarryStrategy(Strategy):
+    """Perps funding/basis carry. Perp premium to spot = crowded longs paying
+    funding -> fade SHORT; discount = crowded shorts -> fade LONG. Funding is
+    injected by the live loop (perp mark vs spot); no funding (paper marks ==
+    spot) -> no trade. Perps-native, uncorrelated with the pattern strategies."""
+
+    name = "funding_carry"
+    requires_reference = False
+    requires_macro = False
+    min_bars = 20
+
+    def propose(self, symbol, tf, df, side=Side.LONG):
+        f = 0.0
+        try:
+            f = float(self.funding_provider().get(symbol, 0.0))
+        except Exception:
+            f = 0.0
+        thr = self.cfg.funding.min_abs_funding_pct
+        if abs(f) < thr:
+            return None
+        want = Side.SHORT if f > 0 else Side.LONG
+        if side is not want:
+            return None
+        price = float(df["close"].iloc[-1])
+        if not self._limit_ok(df, price, side, 1.0):
+            return None
+        return StrategyProposal(
+            strategy=self.name, side=side, level_price=price,
+            level_kind="funding_fade", strength=min(1.0, abs(f) / (thr * 3)),
+            reasons=[f"funding={f:+.3f}%", "crowded_" + ("long" if f > 0 else "short")],
+            target_pct=None, requires_macro=False, meta={"funding_pct": f},
+        )
+
+
 _STRATEGY_TABLE: list[tuple[str, type[Strategy], str]] = [
     ("reaction", ReactionStrategy, "reaction"),
     ("momentum_breakout", MomentumBreakoutStrategy, "momentum_breakout"),
@@ -435,6 +470,7 @@ _STRATEGY_TABLE: list[tuple[str, type[Strategy], str]] = [
     ("volatility_squeeze", VolatilitySqueezeStrategy, "volatility_squeeze"),
     ("vwap_reversion", VwapReversionStrategy, "vwap_reversion"),
     ("liquidity_sweep", LiquiditySweepStrategy, "liquidity_sweep"),
+    ("funding_carry", FundingCarryStrategy, "funding_carry"),
 ]
 
 ALL_STRATEGY_NAMES = [name for name, _, _ in _STRATEGY_TABLE]

@@ -856,6 +856,23 @@ def build_app():
         out["skill"] = regime_skill_manifest()["name"]
         return out
 
+    @app.get("/funding")
+    def funding():
+        """Perps funding / basis monitor (CMC-data skill). Per-symbol perp
+        premium vs spot and the fade classification. Empty in paper (mark==spot)."""
+        from .funding import classify_funding, funding_skill_manifest
+        book = {}
+        try:
+            book = dict(ctx.orchestrator.funding_provider() or {})
+        except Exception:
+            book = {}
+        thr = ctx.scfg.funding.min_abs_funding_pct
+        rows = [{"symbol": s, **classify_funding(f, thr)} for s, f in sorted(book.items())]
+        return {"threshold_pct": thr, "count": len(rows),
+                "extreme": [r for r in rows if r["extreme"]],
+                "all": rows, "skill": funding_skill_manifest(),
+                "note": "Funding from on-chain perp mark vs CMC spot; idle in paper."}
+
     @app.post("/chain/register")
     def chain_register():
         """Mint the agent's ERC-8004 on-chain identity (idempotent)."""

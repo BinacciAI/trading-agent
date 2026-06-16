@@ -26,7 +26,7 @@ def test_registry_builds_all_strategies():
     cfg = StrategyConfig()
     strats = build_strategies(cfg)
     assert [s.name for s in strats] == ALL_STRATEGY_NAMES
-    assert len(strats) == 7
+    assert len(strats) == 8
     # reaction is always first (the core)
     assert isinstance(strats[0], ReactionStrategy)
 
@@ -116,7 +116,7 @@ def test_orchestrator_runs_portfolio():
     cfg.macro.enabled = False
     eng = ExecutionEngine(cfg, deposit_usd=1000.0)
     orch = Orchestrator(cfg, eng)
-    assert len(orch.strategies) == 7
+    assert len(orch.strategies) == 8
     df = to_dataframe(SyntheticSource(seed=5).history("CAKE", Timeframe.M15, 300))
     orch.cold_start("CAKE", Timeframe.M15, df)
     trace = orch.evaluate("CAKE", Timeframe.M15, df, ts=_ts())
@@ -141,11 +141,11 @@ def test_per_strategy_specs():
         assert "backtest" in spec and "market_state" in spec
 
     cat = strategy_catalog()
-    assert len(cat) == 7
+    assert len(cat) == 8
     mans = all_skill_manifests()
-    assert len(mans) == 7
+    assert len(mans) == 8
     port = generate_portfolio_spec(cfg, symbol="BNB", tf=Timeframe.M15, backtest_bars=600)
-    assert len(port["per_strategy"]) == 7
+    assert len(port["per_strategy"]) == 8
     assert "combined_backtest" in port
 
 

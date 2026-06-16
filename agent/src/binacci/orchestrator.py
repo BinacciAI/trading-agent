@@ -83,6 +83,9 @@ class Orchestrator:
         #: The active strategy portfolio. Defaults to every strategy enabled
         #: in cfg.strategies; the core reaction strategy is always first.
         self.strategies: list[Strategy] = strategies or build_strategies(cfg)
+        self.funding_provider = lambda: {}  # symbol -> funding %% (set by live loop)
+        for _s in self.strategies:
+            _s.funding_provider = lambda: self.funding_provider()
         self.pending: list[PendingEntry] = []
         self.traces: list[DecisionTrace] = []
         self.max_traces = 800

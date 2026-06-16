@@ -156,6 +156,10 @@ class LiveLoop:
         self.data_dir = Path(os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data"))
         # the orchestrator's macro provider reads our cache
         self.orch.macro_provider = lambda: self.macro
+        #: symbol -> funding %% (perp premium vs spot); populated live when perp
+        #: marks exist. Paper marks == spot -> empty -> funding strategy idle.
+        self.funding: dict[str, float] = {}
+        self.orch.funding_provider = lambda: self.funding
         # venue execution: engine decides, venues mirror on-chain. Binacci
         # runs a SPOT book and a PERPS book at the same time; each position is
         # routed by its meta["market"] tag. In paper mode both are simulated.

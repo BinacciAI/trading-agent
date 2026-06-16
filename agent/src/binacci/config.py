@@ -180,14 +180,19 @@ RISK_PRESETS: dict[RiskMode, dict] = {
 REGIME_WEIGHTS: dict[str, dict[str, float]] = {
     "risk_on":  {"reaction": 1.0, "momentum_breakout": 1.0, "trend_follow": 1.0,
                  "mean_reversion": 0.5, "volatility_squeeze": 0.9,
-                 "vwap_reversion": 0.5, "liquidity_sweep": 0.7},
+                 "vwap_reversion": 0.5, "liquidity_sweep": 0.7, "funding_carry": 0.8},
     "chop":     {"reaction": 0.9, "momentum_breakout": 0.5, "trend_follow": 0.5,
                  "mean_reversion": 1.0, "volatility_squeeze": 0.9,
-                 "vwap_reversion": 1.0, "liquidity_sweep": 1.0},
+                 "vwap_reversion": 1.0, "liquidity_sweep": 1.0, "funding_carry": 1.0},
     "risk_off": {"reaction": 0.6, "momentum_breakout": 0.3, "trend_follow": 0.3,
                  "mean_reversion": 0.8, "volatility_squeeze": 0.7,
-                 "vwap_reversion": 0.8, "liquidity_sweep": 0.9},
+                 "vwap_reversion": 0.8, "liquidity_sweep": 0.9, "funding_carry": 1.0},
 }
+
+
+class FundingConfig(BaseModel):
+    """Funding/basis carry: minimum |perp premium vs spot| (percent) to fade."""
+    min_abs_funding_pct: float = 0.05
 
 
 class FilterConfig(BaseModel):
@@ -262,6 +267,7 @@ class StrategyToggles(BaseModel):
     volatility_squeeze: bool = True  # Bollinger squeeze release
     vwap_reversion: bool = True      # fade stretch from rolling VWAP
     liquidity_sweep: bool = True     # stop-run wick + reclaim
+    funding_carry: bool = True       # perps funding/basis carry (fade the crowd)
 
 
 class BreakoutConfig(BaseModel):
@@ -376,6 +382,7 @@ class StrategyConfig(BaseSettings):
     #: Active strategies + their parameters (the multi-strategy portfolio).
     strategies: StrategyToggles = Field(default_factory=StrategyToggles)
     breakout: BreakoutConfig = Field(default_factory=BreakoutConfig)
+    funding: FundingConfig = Field(default_factory=FundingConfig)
     mean_reversion: MeanReversionConfig = Field(default_factory=MeanReversionConfig)
     trend: TrendConfig = Field(default_factory=TrendConfig)
     squeeze: SqueezeConfig = Field(default_factory=SqueezeConfig)
@@ -392,6 +399,7 @@ class StrategyConfig(BaseSettings):
     #: spot position AND a perp position concurrently (different strategies).
     perp_strategies: set[str] = Field(default_factory=lambda: {
         "mean_reversion", "volatility_squeeze", "vwap_reversion", "liquidity_sweep",
+        "funding_carry",
     })
     #: Max share of the slot budget a single book (spot OR perps) may hold, so
     #: neither starves the other — guarantees perps stays live alongside spot.
