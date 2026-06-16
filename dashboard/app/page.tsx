@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { EquityArea } from "./charts";
+import { useEffect, useState } from "react";
+import { EquityChart, Sparkline, BookBar } from "./charts";
 import { useAgent, fmt, isRealTx, isSimTx, dur } from "./useAgent";
 
 type Risk = { risk_mode: string; max_positions: number };
@@ -12,6 +12,7 @@ type Status = {
   loop?: { markets?: number; risk_mode?: string; risk?: Risk; strategies?: string[];
     universe?: { markets?: number; candidates: number } };
   explorer_tx_base?: string;
+  equity_series?: { t: number; eq: number; r: number; u: number }[];
 };
 type Pos = {
   symbol: string; tf: string; side?: string; market?: string; strategy?: string; level_kind?: string; state: string;
@@ -79,16 +80,19 @@ export default function Page() {
   const [strat] = useAgent<Strat | null>("/strategies", null);
   const [cfg] = useAgent<Cfg | null>("/config", null, 8000);
 
-  const eqRef = useRef<number[]>([]);
-  const [eq, setEq] = useState<number[]>([]);
+  // Server-persisted equity history (durable, shared across clients), with a
+  // live tail appended from the polling status so the curve updates in realtime.
+  const [tail, setTail] = useState<{ t: number; v: number }[]>([]);
   useEffect(() => {
     const e = status?.equity_usd;
     if (e == null) return;
-    const a = eqRef.current;
-    if (a.length === 0 || a[a.length - 1] !== e) {
-      a.push(e); if (a.length > 90) a.shift(); setEq([...a]);
-    }
+    setTail((a) => (a.length && a[a.length - 1].v === e ? a
+      : [...a, { t: Math.floor(Date.now() / 1000), v: e }].slice(-120)));
   }, [status?.equity_usd]);
+  const server = (status?.equity_series ?? []).map((d) => ({ t: d.t, v: d.eq }));
+  const eqPts = [...server, ...tail.filter((p) => !server.length || p.t > server[server.length - 1].t)].slice(-300);
+  const eqSpark = eqPts.map((p) => p.v);
+  const rSpark = (status?.equity_series ?? []).map((d) => d.r);
 
   const realized = status?.realized_pnl_usd ?? 0;
   const unreal = status?.unrealized_pnl_usd ?? 0;
@@ -147,8 +151,8 @@ export default function Page() {
             </div>
           </div>
           <div className="hero-right">
-            <EquityArea data={eq} title="Equity"
-              sub={`${eq.length} pts · ${pnl >= 0 ? "+" : ""}${fmt(pnl)} today`} />
+            <EquityChart series={eqPts} title="Equity Curve" baseline={status?.deposit_usd}
+              sub={`${eqPts.length} pts · ${pnl >= 0 ? "+" : ""}${fmt(pnl)} P/L`} />
           </div>
         </div>
 
@@ -158,14 +162,17 @@ export default function Page() {
           <div className="card"><div className="lbl">Win Rate</div><div className="val pos">{fmt(winRate)}%</div></div>
           <div className="card"><div className="lbl">Open Positions</div><div className="val">{status?.slots_used ?? 0}/{slotsMax}</div></div>
           <div className="card"><div className="lbl">Risk Exposure</div><div className="val">${fmt(exposure)}</div></div>
-          <div className="card"><div className="lbl">Realized P/L</div><div className={realized >= 0 ? "val pos" : "val neg"}>{realized >= 0 ? "+" : ""}{fmt(realized)}</div></div>
+          <div className="card"><div className="lbl">Realized P/L</div><div className={realized >= 0 ? "val pos" : "val neg"}>{realized >= 0 ? "+" : ""}{fmt(realized)}</div>{rSpark.length > 1 && <Sparkline data={rSpark} />}</div>
           <div className="card"><div className="lbl">Closed Trades</div><div className="val">{status?.closed_trades ?? 0}</div></div>
         </div>
 
         {(status as any)?.books && (() => { const bk = (status as any).books; return (
-          <div className="statline" style={{ marginTop: 12 }}>
+          <div style={{ marginTop: 12 }}>
+          <BookBar spot={bk.spot.open} perpLong={bk.perp.long} perpShort={bk.perp.short} />
+          <div className="statline" style={{ marginTop: 10 }}>
             <span>SPOT <b className="pos">{bk.spot.open} long</b> · <b className={bk.spot.realized >= 0 ? "pos" : "neg"}>{bk.spot.realized >= 0 ? "+" : ""}{fmt(bk.spot.realized)}</b></span>
             <span>PERPS <b>{bk.perp.open} open</b> · <b className="pos">{bk.perp.long}L</b> / <b className="neg">{bk.perp.short}S</b> · <b className={bk.perp.realized >= 0 ? "pos" : "neg"}>{bk.perp.realized >= 0 ? "+" : ""}{fmt(bk.perp.realized)}</b></span>
+          </div>
           </div>
         ); })()}
 
@@ -276,16 +283,34 @@ export default function Page() {
         <div>
           <h2 className="section">Agent Activity Feed</h2>
           <div className="feed">
-            {[...traces].reverse().slice(0, 9).map((t, i) => {
-              const lg = t.gates[t.gates.length - 1];
-              return (
-                <div key={i} className={t.entered ? "feed-item entered" : "feed-item blocked"}>
+            {(() => {
+              const recent = [...traces].reverse();
+              const entered = recent.filter((t) => t.entered).slice(0, 6);
+              const skips = recent.filter((t) => !t.entered);
+              const items = entered.map((t, i) => (
+                <div key={`e${i}`} className="feed-item entered">
                   <div className="when">{new Date(t.ts).toLocaleTimeString()} — {t.symbol} {t.tf} · {sLabel(t.strategy)}</div>
-                  <div className="what">{t.entered ? <><b>Entered</b> — all gates confirmed, limit filled.</> : <><b>Skipped</b> — {lg ? (lg.detail || lg.step.replace(/_/g, " ") + " not confirmed") : "awaiting confirmation"}.</>}</div>
+                  <div className="what"><b>Entered</b> — all gates confirmed, limit filled.</div>
                 </div>
-              );
-            })}
-            {traces.length === 0 && <div className="feed-item"><div className="what">Watching markets…</div></div>}
+              ));
+              if (skips.length) {
+                // top recent skip reasons, de-duplicated
+                const reasons: string[] = [];
+                for (const t of skips) {
+                  const lg = t.gates[t.gates.length - 1];
+                  const r = lg ? (lg.detail || lg.step.replace(/_/g, " ")) : "no setup";
+                  if (!reasons.includes(r)) reasons.push(r);
+                  if (reasons.length >= 3) break;
+                }
+                items.push(
+                  <div key="skips" className="feed-item blocked">
+                    <div className="when">{skips.length} evaluations · no qualifying setup</div>
+                    <div className="what">{reasons.map((r, i) => <span key={i} className="skip-reason">{r}</span>)}</div>
+                  </div>
+                );
+              }
+              return items.length ? items : <div className="feed-item"><div className="what">Watching markets…</div></div>;
+            })()}
           </div>
         </div>
         <div className="vault">

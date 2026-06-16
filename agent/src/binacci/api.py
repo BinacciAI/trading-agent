@@ -153,6 +153,7 @@ def build_app():
         snap["regime_weighting"] = ctx.scfg.regime_weighting
         snap["prices"] = {k: round(v, 6) for k, v in ctx.prices.items()}
         snap["explorer_tx_base"] = _explorer_tx_base(ctx.rcfg)
+        snap["equity_series"] = ctx.loop.equity_series()
         return snap
 
     @app.get("/positions")
