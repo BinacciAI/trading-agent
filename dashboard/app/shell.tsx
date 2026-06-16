@@ -44,6 +44,7 @@ const NAV: NavItem[] = [
   { ic: "backtests", label: "Backtests", href: "/backtests" },
   { section: "System" },
   { ic: "competition", label: "Competition", href: "/competition" },
+  { ic: "risk", label: "Go Live", href: "/golive" },
   { ic: "settings", label: "Settings", href: "/settings" },
 ];
 

@@ -145,11 +145,14 @@ class ExecutionEngine:
         strategy = getattr(sig, "strategy", "reaction")
         if not self.can_open(sig.symbol, sig.timeframe, strategy):
             return None
-        size_mult = max(0.0, min(1.0, float(sig.meta.get("size_mult", 1.0) or 1.0)))
-        notional = self.entry_notional_usd() * size_mult
-        qty = notional / fill_price
         market = self.cfg.market_for(strategy)
         leverage = self.cfg.perps_leverage if market == "perp" else 1.0
+        size_mult = max(0.0, min(1.0, float(sig.meta.get("size_mult", 1.0) or 1.0)))
+        notional = self.entry_notional_usd() * size_mult
+        cap = getattr(self.cfg, "golive_max_usd", 0.0) or 0.0
+        if cap > 0:
+            notional = min(notional, cap / max(leverage, 1.0))  # cap live EXPOSURE
+        qty = notional / fill_price
         pos = Position(
             symbol=sig.symbol,
             timeframe=sig.timeframe,

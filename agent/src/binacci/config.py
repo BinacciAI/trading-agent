@@ -429,6 +429,10 @@ class StrategyConfig(BaseSettings):
     #: estimated round-trip on-chain fees + gas. Auto-on for live venues; off
     #: in paper (so the demo stays active). Override BINACCI_MIN_EDGE_GATE.
     min_edge_gate: bool = False
+    #: Go-live ramp: hard cap on per-order EXPOSURE (notional = margin x leverage)
+    #: in USD. The first real-money trades stay dust-sized regardless of leverage
+    #: until the operator raises it. 0 = no cap. Set BINACCI_GOLIVE_MAX_USD.
+    golive_max_usd: float = 0.0
 
     #: Named risk preset. Applied by :meth:`load` (and the runtime switcher),
     #: NOT by the bare constructor — so unit tests keep the raw defaults.
@@ -556,6 +560,10 @@ class StrategyConfig(BaseSettings):
         try:
             self.risk.max_positions = max(1, int(float(
                 os.environ.get("BINACCI_MAX_POSITIONS", self.risk.max_positions))))
+        except (TypeError, ValueError):
+            pass
+        try:
+            self.golive_max_usd = max(0.0, float(os.environ.get("BINACCI_GOLIVE_MAX_USD", self.golive_max_usd)))
         except (TypeError, ValueError):
             pass
         _avg = os.environ.get("BINACCI_AVERAGING")

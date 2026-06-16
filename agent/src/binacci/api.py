@@ -639,6 +639,44 @@ def build_app():
             })
         return out
 
+    @app.get("/golive")
+    def golive():
+        """Real-money go-live readiness checklist. Read-only — aggregates wallet/
+        auth/funding/safety so the operator can flip BINACCI_VENUE themselves."""
+        import os
+        rc, sc = ctx.rcfg, ctx.scfg
+        def chk(name, ok, detail): return {"name": name, "ok": bool(ok), "detail": detail}
+        creds = all(os.environ.get(k) for k in ("TWAK_ACCESS_ID", "TWAK_HMAC_SECRET", "TWAK_WALLET_PASSWORD"))
+        wallet = bool(rc.wallet_address) or bool(os.environ.get("BINACCI_WALLET_ADDRESS"))
+        pk = bool(os.environ.get("BINACCI_AGENT_PRIVATE_KEY"))
+        cap = sc.golive_max_usd
+        live = rc.venue in ("perps", "pancake") and not rc.use_testnet
+        sent = getattr(ctx.loop, "sentinel", None)
+        checks = [
+            chk("Trust Wallet auth (TWAK creds)", creds, "TWAK_ACCESS_ID / HMAC_SECRET / WALLET_PASSWORD set" if creds else "missing one or more TWAK_* env vars"),
+            chk("Wallet address", wallet, rc.wallet_address or "set BINACCI_WALLET_ADDRESS"),
+            chk("Deposit configured", rc.deposit_usd > 0, f"${rc.deposit_usd}"),
+            chk("ERC-8004 key (optional)", pk, "BINACCI_AGENT_PRIVATE_KEY set" if pk else "optional — for on-chain identity"),
+            chk("Fee-aware entry gate", sc.min_edge_gate or live, "on" if sc.min_edge_gate else "auto-on for live venues"),
+            chk("Go-live ramp cap", cap > 0, f"${cap}/order exposure" if cap > 0 else "recommended: BINACCI_GOLIVE_MAX_USD=25"),
+            chk("Sentinel armed", sent is not None and not getattr(sent, "tripped", False), "watching de-peg/crash" if sent else "n/a"),
+            chk("Kill switch armed", not ctx.engine.kill_switch_fired, "armed" if not ctx.engine.kill_switch_fired else "FIRED"),
+            chk("Not halted", not ctx.engine.trading_halted, ctx.engine.halt_reason or "ok"),
+            chk("Venue preflight", ctx.loop.preflight_ok is not False, ctx.loop.preflight_detail or "run POST /venue/preflight after flipping"),
+        ]
+        ready = creds and wallet and rc.deposit_usd > 0
+        steps = []
+        if not creds: steps.append("Set TWAK_ACCESS_ID / TWAK_HMAC_SECRET / TWAK_WALLET_PASSWORD (Trust Wallet Agent Kit).")
+        if not wallet: steps.append("Set BINACCI_WALLET_ADDRESS to your funded BSC wallet.")
+        steps.append("Fund the wallet: USDT (capital) + ~$10–20 BNB for gas.")
+        if cap <= 0: steps.append("Set BINACCI_GOLIVE_MAX_USD=25 so the first orders are dust-sized.")
+        steps.append("Flip live: set BINACCI_VENUE=perps and BINACCI_USE_TESTNET=false, then redeploy.")
+        steps.append("POST /venue/preflight — confirm OK. Watch /sentinel, /venue, Execution Logs; raise the cap only after real fills verify on BscScan.")
+        return {"mode": "LIVE" if live else "PAPER", "venue": rc.venue, "testnet": rc.use_testnet,
+                "ready_to_flip": ready, "checks": checks, "next_steps": steps,
+                "warnings": ["Real funds at leverage — real loss risk.",
+                             "Keep the ramp cap on until real fills are verified on-chain."]}
+
     @app.get("/venue")
     def venue():
         return {
