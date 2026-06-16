@@ -38,6 +38,7 @@ class AgentContext:
         self._data_dir = os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data")
         from .persistence import apply_operator_settings
         apply_operator_settings(self.scfg, self._data_dir)
+        self.scfg.apply_size_env()  # fee-efficient sizing wins over preset/operator
         self.engine = ExecutionEngine(self.scfg, deposit_usd=self.rcfg.deposit_usd)
         self.engine._simulate_fees = os.environ.get("BINACCI_SIMULATE_FEES", "true").strip().lower() not in ("0", "false", "no", "off")
         self.orchestrator = Orchestrator(self.scfg, self.engine)

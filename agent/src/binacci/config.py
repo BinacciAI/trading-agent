@@ -480,6 +480,7 @@ class StrategyConfig(BaseSettings):
         _meg = os.environ.get("BINACCI_MIN_EDGE_GATE")
         if _meg is not None:
             cfg.min_edge_gate = _meg.strip().lower() in ("1", "true", "yes", "on")
+        cfg.apply_size_env()
         cfg.export_runtime_env()
         return cfg
 
@@ -531,6 +532,31 @@ class StrategyConfig(BaseSettings):
         """Max open positions a single book may hold (reserves room for the
         other book so spot and perps are always live together)."""
         return max(1, int(self.risk.max_positions * self.book_share + 0.999))
+
+    def apply_size_env(self) -> "StrategyConfig":
+        """Structural overrides for fee-efficient sizing on small deposits:
+        bigger/fewer positions so notional clears fixed gas. These override the
+        risk-mode preset, so call them LAST (after apply_risk_mode / operator
+        settings)."""
+        import os
+        try:
+            self.margin.entry_pct_of_working = max(1e-5, float(
+                os.environ.get("BINACCI_ENTRY_PCT_WORKING", self.margin.entry_pct_of_working)))
+        except (TypeError, ValueError):
+            pass
+        try:
+            self.risk.max_positions = max(1, int(float(
+                os.environ.get("BINACCI_MAX_POSITIONS", self.risk.max_positions))))
+        except (TypeError, ValueError):
+            pass
+        _avg = os.environ.get("BINACCI_AVERAGING")
+        if _avg:
+            try:
+                self.margin.averaging_multipliers = tuple(
+                    float(x) for x in _avg.split(",") if x.strip())
+            except (TypeError, ValueError):
+                pass
+        return self
 
     def regime_size_mult(self, regime: str, strategy: str) -> float:
         """Per-entry size multiplier in [0,1] for a strategy in a regime.
