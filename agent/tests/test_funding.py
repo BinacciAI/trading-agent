@@ -12,7 +12,7 @@ def test_basis_and_classify():
     assert classify_funding(0.01, 0.05)["state"] == "neutral"
 
 def test_funding_strategy_registered():
-    assert "funding_carry" in ALL_STRATEGY_NAMES and len(ALL_STRATEGY_NAMES) == 8
+    assert "funding_carry" in ALL_STRATEGY_NAMES and len(ALL_STRATEGY_NAMES) == 9
     cfg = StrategyConfig()
     assert cfg.market_for("funding_carry") == "perp"
     assert "funding_carry" in {s.name for s in build_strategies(cfg)}

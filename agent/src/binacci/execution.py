@@ -220,7 +220,7 @@ class ExecutionEngine:
                 return self._close(pos, price, ts, reason="trailing_stop")
         return None
 
-    def _close(self, pos: Position, price: float, ts: datetime, reason: str) -> ClosedTrade:
+    def _close(self, pos: Position, price: float, ts: datetime, reason: str, _cascade: bool = True) -> ClosedTrade:
         gross = pos.unrealized_pnl_usd(price)
         fees = 0.0
         if self._simulate_fees:
@@ -239,7 +239,42 @@ class ExecutionEngine:
         trade = ClosedTrade(position=pos, pnl_usd=pnl, reason=reason,
                             gross_pnl_usd=gross, fees_usd=fees)
         self.closed.append(trade)
+        if _cascade:
+            self._close_carry_pair(pos, price, ts)
         return trade
+
+    def _close_carry_pair(self, pos: Position, price: float, ts: datetime) -> None:
+        """When one leg of a delta-neutral basis carry closes, close the other."""
+        strat = pos.meta.get("strategy")
+        if strat not in ("basis_carry", "basis_hedge"):
+            return
+        pair = "basis_hedge" if strat == "basis_carry" else "basis_carry"
+        for o in list(self.positions):
+            if (o.symbol == pos.symbol and o.timeframe == pos.timeframe
+                    and o.meta.get("strategy") == pair
+                    and o.state in (PositionState.OPEN, PositionState.SL_IN_PROFIT)):
+                self._close(o, price, ts, reason="carry_pair_close", _cascade=False)
+
+    def open_carry_hedge(self, perp_pos: Position, fill_price: float, ts: datetime) -> Optional[Position]:
+        """Delta-neutral spot LONG hedge for a short-perp basis carry: equal
+        notional, opened directly (bypasses slot/dup checks — it's a paired leg)."""
+        if perp_pos.side is not Side.SHORT:
+            return None
+        for o in self.positions:
+            if (o.symbol == perp_pos.symbol and o.timeframe == perp_pos.timeframe
+                    and o.meta.get("strategy") == "basis_hedge" and o.state is not PositionState.CLOSED):
+                return None  # already hedged
+        notional = perp_pos.notional_usd
+        if notional <= 0 or fill_price <= 0:
+            return None
+        hedge = Position(symbol=perp_pos.symbol, timeframe=perp_pos.timeframe, side=Side.LONG,
+                         state=PositionState.OPEN, target_pct=perp_pos.target_pct, opened_ts=ts,
+                         meta={"level": fill_price, "strategy": "basis_hedge", "market": "spot",
+                               "leverage": 1.0, "gates": [], "carry": True})
+        hedge.fills.append(Fill(ts=ts, price=fill_price, qty=notional / fill_price,
+                                notional_usd=notional, tag="entry"))
+        self.positions.append(hedge)
+        return hedge
 
     # ---------------- venue reconciliation (keeps books == chain) ----------------
 

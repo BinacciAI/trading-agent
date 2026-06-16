@@ -180,13 +180,13 @@ RISK_PRESETS: dict[RiskMode, dict] = {
 REGIME_WEIGHTS: dict[str, dict[str, float]] = {
     "risk_on":  {"reaction": 1.0, "momentum_breakout": 1.0, "trend_follow": 1.0,
                  "mean_reversion": 0.5, "volatility_squeeze": 0.9,
-                 "vwap_reversion": 0.5, "liquidity_sweep": 0.7, "funding_carry": 0.8},
+                 "vwap_reversion": 0.5, "liquidity_sweep": 0.7, "funding_carry": 0.8, "basis_carry": 1.0},
     "chop":     {"reaction": 0.9, "momentum_breakout": 0.5, "trend_follow": 0.5,
                  "mean_reversion": 1.0, "volatility_squeeze": 0.9,
-                 "vwap_reversion": 1.0, "liquidity_sweep": 1.0, "funding_carry": 1.0},
+                 "vwap_reversion": 1.0, "liquidity_sweep": 1.0, "funding_carry": 1.0, "basis_carry": 1.0},
     "risk_off": {"reaction": 0.6, "momentum_breakout": 0.3, "trend_follow": 0.3,
                  "mean_reversion": 0.8, "volatility_squeeze": 0.7,
-                 "vwap_reversion": 0.8, "liquidity_sweep": 0.9, "funding_carry": 1.0},
+                 "vwap_reversion": 0.8, "liquidity_sweep": 0.9, "funding_carry": 1.0, "basis_carry": 1.0},
 }
 
 
@@ -268,6 +268,7 @@ class StrategyToggles(BaseModel):
     vwap_reversion: bool = True      # fade stretch from rolling VWAP
     liquidity_sweep: bool = True     # stop-run wick + reclaim
     funding_carry: bool = True       # perps funding/basis carry (fade the crowd)
+    basis_carry: bool = True         # delta-neutral spot-perp basis carry
 
 
 class BreakoutConfig(BaseModel):
@@ -399,7 +400,7 @@ class StrategyConfig(BaseSettings):
     #: spot position AND a perp position concurrently (different strategies).
     perp_strategies: set[str] = Field(default_factory=lambda: {
         "mean_reversion", "volatility_squeeze", "vwap_reversion", "liquidity_sweep",
-        "funding_carry",
+        "funding_carry", "basis_carry",
     })
     #: Max share of the slot budget a single book (spot OR perps) may hold, so
     #: neither starves the other — guarantees perps stays live alongside spot.

@@ -462,6 +462,38 @@ class FundingCarryStrategy(Strategy):
         )
 
 
+class BasisCarryStrategy(Strategy):
+    """Delta-neutral spot–perp basis carry. Fires only on a perp PREMIUM (the
+    short-perp leg here; the engine opens an equal long-spot hedge so the pair
+    is delta-neutral). Idle without funding/basis data (paper marks == spot)."""
+
+    name = "basis_carry"
+    requires_reference = False
+    requires_macro = False
+    min_bars = 20
+
+    def propose(self, symbol, tf, df, side=Side.LONG):
+        if side is not Side.SHORT:
+            return None  # short-perp leg only (paired with a long-spot hedge)
+        f = 0.0
+        try:
+            f = float(self.funding_provider().get(symbol, 0.0))
+        except Exception:
+            f = 0.0
+        thr = self.cfg.funding.min_abs_funding_pct
+        if f < thr:   # premium only
+            return None
+        price = float(df["close"].iloc[-1])
+        if not self._short_limit_ok(df, price, 1.0):
+            return None
+        return StrategyProposal(
+            strategy=self.name, side=Side.SHORT, level_price=price,
+            level_kind="basis_carry", strength=min(1.0, f / (thr * 3)),
+            reasons=[f"basis={f:+.3f}%", "delta_neutral_carry"],
+            target_pct=None, requires_macro=False, meta={"basis_pct": f, "carry": True},
+        )
+
+
 _STRATEGY_TABLE: list[tuple[str, type[Strategy], str]] = [
     ("reaction", ReactionStrategy, "reaction"),
     ("momentum_breakout", MomentumBreakoutStrategy, "momentum_breakout"),
@@ -471,6 +503,7 @@ _STRATEGY_TABLE: list[tuple[str, type[Strategy], str]] = [
     ("vwap_reversion", VwapReversionStrategy, "vwap_reversion"),
     ("liquidity_sweep", LiquiditySweepStrategy, "liquidity_sweep"),
     ("funding_carry", FundingCarryStrategy, "funding_carry"),
+    ("basis_carry", BasisCarryStrategy, "basis_carry"),
 ]
 
 ALL_STRATEGY_NAMES = [name for name, _, _ in _STRATEGY_TABLE]

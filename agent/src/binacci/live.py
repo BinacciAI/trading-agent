@@ -160,6 +160,8 @@ class LiveLoop:
         #: marks exist. Paper marks == spot -> empty -> funding strategy idle.
         self.funding: dict[str, float] = {}
         self.orch.funding_provider = lambda: self.funding
+        from .sentinel import Sentinel
+        self.sentinel = Sentinel()
         # venue execution: engine decides, venues mirror on-chain. Binacci
         # runs a SPOT book and a PERPS book at the same time; each position is
         # routed by its meta["market"] tag. In paper mode both are simulated.
@@ -679,6 +681,13 @@ class LiveLoop:
                 completed[sym] = done
         self.last_poll = now
         self.polls += 1
+        try:
+            ev = self.sentinel.check(self.prices)
+            if ev["critical"] and not self.engine.trading_halted and not self.engine.kill_switch_fired:
+                self.engine.halt("sentinel: " + ev["reason"])
+                log.warning("SENTINEL HALT — %s", ev["reason"])
+        except Exception:
+            log.exception("sentinel check failed (non-fatal)")
 
         # 2) macro refresh on its own (credit-aware) cadence; F&G even rarer
         macro_due = (self.last_macro is None

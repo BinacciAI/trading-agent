@@ -266,6 +266,14 @@ class Orchestrator:
                         except Exception:  # venue failure never corrupts engine state
                             import logging
                             logging.getLogger(__name__).exception("on_open hook failed")
+                    if pos.meta.get("strategy") == "basis_carry" and pos.side is Side.SHORT:
+                        hedge = self.engine.open_carry_hedge(pos, sig.level_price, ts)
+                        if hedge is not None and self.on_open:
+                            try:
+                                self.on_open(hedge)
+                            except Exception:
+                                import logging
+                                logging.getLogger(__name__).exception("hedge on_open failed")
 
         # manage open positions on this symbol
         for pos in self.engine.open_positions():

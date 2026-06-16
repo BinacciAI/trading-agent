@@ -845,6 +845,55 @@ def build_app():
             return PlainTextResponse(p.read_text(encoding="utf-8"))
         return PlainTextResponse(build_memory_md(ctx.loop))
 
+    @app.post("/optimize")
+    def optimize_start():
+        """Meta-learner: run the fee-aware sweep on accumulated data and propose
+        the best risk-adjusted edge config. Non-blocking; poll GET /optimize."""
+        from .metalearn import start_job
+        syms = list(ctx.scfg.symbols)[:8]
+        return start_job(ctx.scfg, ctx.rcfg, syms, getattr(ctx, "_data_dir", "/tmp/binacci-data"))
+
+    @app.get("/optimize")
+    def optimize_status():
+        from .metalearn import last_proposal
+        return last_proposal(getattr(ctx, "_data_dir", "/tmp/binacci-data"))
+
+    @app.post("/optimize/apply")
+    def optimize_apply():
+        """Apply the meta-learner's best proposal to the live engine (operator
+        confirm) and persist it."""
+        from .metalearn import last_proposal
+        from .persistence import save_operator_settings
+        prop = last_proposal(getattr(ctx, "_data_dir", "/tmp/binacci-data")).get("proposal") or {}
+        best = prop.get("best")
+        if not best:
+            return {"ok": False, "error": "no proposal yet — run POST /optimize first"}
+        c = ctx.scfg
+        c.perps_leverage = max(1.0, float(best["perps_leverage"]))
+        c.perps_target_mult = max(1.0, float(best["perps_target_mult"]))
+        tr = best.get("trailing") or {}
+        c.trailing.trigger_pct = float(tr.get("trigger", c.trailing.trigger_pct))
+        c.trailing.initial_sl_pct = float(tr.get("initial", c.trailing.initial_sl_pct))
+        c.trailing.step_pct = float(tr.get("step", c.trailing.step_pct))
+        c.export_runtime_env()
+        save_operator_settings(getattr(ctx, "_data_dir", "/tmp/binacci-data"), {
+            "perps_leverage": c.perps_leverage, "perps_target_mult": c.perps_target_mult,
+            "trailing": {"trigger": c.trailing.trigger_pct, "initial": c.trailing.initial_sl_pct, "step": c.trailing.step_pct}})
+        return {"ok": True, "applied": best["label"], "perps_leverage": c.perps_leverage,
+                "perps_target_mult": c.perps_target_mult,
+                "trailing": {"trigger": c.trailing.trigger_pct, "initial": c.trailing.initial_sl_pct, "step": c.trailing.step_pct}}
+
+    @app.get("/sentinel")
+    def sentinel():
+        """Market-anomaly safety net: de-peg / flash-crash / broad-crash status."""
+        s = getattr(ctx.loop, "sentinel", None)
+        if s is None:
+            return {"armed": False}
+        out = s.status()
+        out["trading_halted"] = ctx.engine.trading_halted
+        out["halt_reason"] = ctx.engine.halt_reason
+        return out
+
     @app.get("/regime")
     def regime():
         """Macro Regime Classifier (CMC-data skill) — live classification."""
@@ -872,6 +921,25 @@ def build_app():
                 "extreme": [r for r in rows if r["extreme"]],
                 "all": rows, "skill": funding_skill_manifest(),
                 "note": "Funding from on-chain perp mark vs CMC spot; idle in paper."}
+
+    @app.get("/basis")
+    def basis():
+        """Spot–perp basis carry monitor. Premium-only delta-neutral candidates
+        and any active carry pairs (short perp + long spot hedge)."""
+        from .basis import basis_skill_manifest
+        from .funding import classify_funding
+        book = {}
+        try:
+            book = dict(ctx.orchestrator.funding_provider() or {})
+        except Exception:
+            book = {}
+        thr = ctx.scfg.funding.min_abs_funding_pct
+        carry = [{"symbol": sym, **classify_funding(f, thr)} for sym, f in sorted(book.items()) if f >= thr]
+        pairs = [{"symbol": pos.symbol, "tf": pos.timeframe.value, "notional_usd": round(pos.notional_usd, 2)}
+                 for pos in ctx.engine.open_positions() if pos.meta.get("strategy") == "basis_carry"]
+        return {"threshold_pct": thr, "carry_candidates": carry, "active_pairs": pairs,
+                "skill": basis_skill_manifest(),
+                "note": "Premium-only delta-neutral carry (short perp + long spot); idle in paper."}
 
     @app.post("/chain/register")
     def chain_register():
