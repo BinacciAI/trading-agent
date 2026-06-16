@@ -277,6 +277,7 @@ def build_app():
             return {"ok": False, "error": f"unknown mode {mode!r}",
                     "modes": [m.value for m in RiskMode]}
         ctx.scfg.apply_risk_mode(rm)  # ctx.engine.cfg is the same object
+        ctx.scfg.apply_size_env()  # keep fee-efficient sizing across a mode switch
         ctx.scfg.export_runtime_env()  # propagate leverage to venue/brain/monitors
         from .persistence import save_operator_settings
         save_operator_settings(getattr(ctx, "_data_dir", "/tmp/binacci-data"),
