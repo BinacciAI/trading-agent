@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Optional
 
 from .config import StrategyConfig, Timeframe
+from .fees import fee_model
 from .models import (
     EntrySignal,
     Fill,
@@ -45,8 +46,10 @@ class AccountState:
 @dataclass
 class ClosedTrade:
     position: Position
-    pnl_usd: float
+    pnl_usd: float            # net of on-chain fees
     reason: str
+    gross_pnl_usd: float = 0.0
+    fees_usd: float = 0.0
 
 
 class ExecutionEngine:
@@ -58,6 +61,12 @@ class ExecutionEngine:
         self.positions: list[Position] = []
         self.closed: list[ClosedTrade] = []
         self.kill_switch_fired: bool = False
+        import os as _os
+        self.fees = fee_model()
+        #: book realized P/L net of estimated on-chain fees (swap/perp/gas) even
+        #: in paper, so the displayed edge is what a live wallet would actually
+        #: keep. Disable with BINACCI_SIMULATE_FEES=false to see gross.
+        self._simulate_fees = _os.environ.get("BINACCI_SIMULATE_FEES", "false").strip().lower() in ("1", "true", "yes", "on")
         #: Hard halt on NEW opens (preflight failure / boot-reconcile mismatch /
         #: unrecoverable venue desync). Closes and management still run so the
         #: book can always be flattened. Cleared by resume() after a human ack.
@@ -210,14 +219,23 @@ class ExecutionEngine:
         return None
 
     def _close(self, pos: Position, price: float, ts: datetime, reason: str) -> ClosedTrade:
-        pnl = pos.unrealized_pnl_usd(price)
+        gross = pos.unrealized_pnl_usd(price)
+        fees = 0.0
+        if self._simulate_fees:
+            market = self.cfg.market_for(pos.meta.get("strategy", "reaction"))
+            lev = float(pos.meta.get("leverage", 1.0) or 1.0)
+            hours = ((ts - pos.opened_ts).total_seconds() / 3600.0) if pos.opened_ts else 0.0
+            fees = self.fees.position_roundtrip_usd(market, pos.notional_usd, lev, hours)
+        pnl = gross - fees
         pos.fills.append(Fill(ts=ts, price=price, qty=-pos.qty, notional_usd=-pos.notional_usd, tag="exit"))
         pos.state = PositionState.CLOSED
         pos.closed_ts = ts
         pos.close_reason = reason
         pos.realized_pnl_usd = pnl
+        pos.meta["fees_usd"] = round(fees, 4)
         self.account.realized_pnl_usd += pnl
-        trade = ClosedTrade(position=pos, pnl_usd=pnl, reason=reason)
+        trade = ClosedTrade(position=pos, pnl_usd=pnl, reason=reason,
+                            gross_pnl_usd=gross, fees_usd=fees)
         self.closed.append(trade)
         return trade
 

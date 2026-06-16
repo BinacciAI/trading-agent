@@ -20,6 +20,10 @@ type Cfg = {
 type AttrRow = { trades: number; wins: number; realized: number; unrealized: number; net: number; open: number; win_rate: number };
 type Attr = { regime?: string; by_strategy: Record<string, AttrRow>; by_book: Record<string, AttrRow>; by_regime: Record<string, AttrRow> };
 type Trade = { symbol: string; strategy?: string; market?: string; reason: string; pnl_usd: number; closed: string | null };
+type Fees = { simulate_fees?: boolean; min_edge_gate?: boolean;
+  realized?: { gross_usd: number; fees_usd: number; net_usd: number; fee_drag_pct_of_gross: number | null };
+  breakeven_move_pct_incl_gas?: { spot: number; perp: number };
+  model?: { swap_fee_pct_per_swap?: number; perp_fee_pct_per_side?: number; gas_usd_per_action?: number } };
 
 const REG: Record<string, string> = { risk_on: "badge green", chop: "badge gold", risk_off: "badge red", unknown: "badge gray" };
 const sl = (s: string) => s.replace(/_/g, " ");
@@ -33,6 +37,7 @@ export default function Console() {
   const [cfg] = useAgent<Cfg>("/config", {}, 8000);
   const [attr] = useAgent<Attr>("/attribution", { by_strategy: {}, by_book: {}, by_regime: {} }, 6000);
   const [trades] = useAgent<Trade[]>("/trades", [], 8000);
+  const [fees] = useAgent<Fees>("/fees", {}, 10000);
 
   const [lev, setLev] = useState("");
   const [str, setStr] = useState("");
@@ -156,6 +161,23 @@ export default function Console() {
           <span style={{ flex: 1 }} />
           <button className="btn btn-primary" onClick={apply}>Apply to engine</button>
         </div>
+      </div>
+
+      <h2 className="section">On-Chain Fees</h2>
+      <div className="vault" style={{ marginBottom: 20 }}>
+        <div className="statline" style={{ border: "none", background: "transparent", padding: 0, marginBottom: 4 }}>
+          <span>Gross <b className={(fees.realized?.gross_usd ?? 0) >= 0 ? "pos" : "neg"}>{fmt(fees.realized?.gross_usd ?? 0)}</b></span>
+          <span>Fees paid <b className="neg">−{fmt(fees.realized?.fees_usd ?? 0)}</b></span>
+          <span>Net <b className={(fees.realized?.net_usd ?? 0) >= 0 ? "pos" : "neg"}>{fmt(fees.realized?.net_usd ?? 0)}</b></span>
+          <span>Fee drag <b>{fees.realized?.fee_drag_pct_of_gross != null ? fmt(fees.realized.fee_drag_pct_of_gross) + "%" : "—"}</b></span>
+        </div>
+        <div className="row"><span>Breakeven move · spot (PancakeSwap + gas)</span><span className="v">{fmt(fees.breakeven_move_pct_incl_gas?.spot ?? 0)}%</span></div>
+        <div className="row"><span>Breakeven move · perps (open/close + gas)</span><span className="v">{fmt(fees.breakeven_move_pct_incl_gas?.perp ?? 0)}%</span></div>
+        <div className="row"><span>Fee-aware entry gate</span><span className="v">{fees.min_edge_gate ? "ON" : "off (paper)"}</span></div>
+        <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 8 }}>
+          Swap {fees.model?.swap_fee_pct_per_swap ?? "—"}%/swap · perp {fees.model?.perp_fee_pct_per_side ?? "—"}%/side · gas ${fees.model?.gas_usd_per_action ?? "—"}/action.
+          Gas is fixed per action, so breakeven falls as position size rises.
+        </p>
       </div>
 
       <h2 className="section">Net P/L by Strategy</h2>

@@ -416,6 +416,10 @@ class StrategyConfig(BaseSettings):
     #: Regime-weighted allocation: tilt per-entry size by the macro regime.
     #: Disable with BINACCI_REGIME_WEIGHTING=false.
     regime_weighting: bool = True
+    #: Fee-aware entry gate: refuse setups whose target can't clear the
+    #: estimated round-trip on-chain fees + gas. Auto-on for live venues; off
+    #: in paper (so the demo stays active). Override BINACCI_MIN_EDGE_GATE.
+    min_edge_gate: bool = False
 
     #: Named risk preset. Applied by :meth:`load` (and the runtime switcher),
     #: NOT by the bare constructor — so unit tests keep the raw defaults.
@@ -473,6 +477,9 @@ class StrategyConfig(BaseSettings):
         _rw = os.environ.get("BINACCI_REGIME_WEIGHTING")
         if _rw is not None:
             cfg.regime_weighting = _rw.strip().lower() in ("1", "true", "yes", "on")
+        _meg = os.environ.get("BINACCI_MIN_EDGE_GATE")
+        if _meg is not None:
+            cfg.min_edge_gate = _meg.strip().lower() in ("1", "true", "yes", "on")
         cfg.export_runtime_env()
         return cfg
 

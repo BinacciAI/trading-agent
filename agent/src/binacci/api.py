@@ -33,10 +33,13 @@ class AgentContext:
             self.scfg.allow_shorts = self.rcfg.venue in ("paper", "perps")
         # persisted operator choices (risk mode / leverage / knobs) win over
         # env + defaults, so a redeploy never reverts the operator's settings.
+        if os.environ.get("BINACCI_MIN_EDGE_GATE") is None and self.rcfg.venue != "paper":
+            self.scfg.min_edge_gate = True  # real money: never trade fee-losing setups
         self._data_dir = os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data")
         from .persistence import apply_operator_settings
         apply_operator_settings(self.scfg, self._data_dir)
         self.engine = ExecutionEngine(self.scfg, deposit_usd=self.rcfg.deposit_usd)
+        self.engine._simulate_fees = os.environ.get("BINACCI_SIMULATE_FEES", "true").strip().lower() not in ("0", "false", "no", "off")
         self.orchestrator = Orchestrator(self.scfg, self.engine)
         from .live import LiveLoop
 
@@ -194,6 +197,8 @@ def build_app():
                 "notional_usd": round(notional, 2),
                 "leverage": pos.meta.get("leverage", 1),
                 "pnl_usd": round(t.pnl_usd, 2),
+                "gross_pnl_usd": round(t.gross_pnl_usd, 4),
+                "fees_usd": round(t.fees_usd, 4),
                 "pnl_pct": round((t.pnl_usd / notional * 100) if notional else 0.0, 3),
                 "reason": t.reason,
                 "opened": pos.opened_ts.isoformat() if pos.opened_ts else None,
@@ -238,6 +243,9 @@ def build_app():
             "perps_target_mult": ctx.scfg.perps_target_mult,
             "min_signal_strength": ctx.scfg.min_signal_strength,
             "regime_weighting": ctx.scfg.regime_weighting,
+            "min_edge_gate": ctx.scfg.min_edge_gate,
+            "fees": __import__("binacci.fees", fromlist=["fee_model"]).fee_model().summary(
+                ctx.rcfg.deposit_usd, ctx.scfg.margin.entry_pct_of_deposit, ctx.scfg.perps_leverage),
             "trailing": {"trigger": ctx.scfg.trailing.trigger_pct,
                          "initial": ctx.scfg.trailing.initial_sl_pct,
                          "step": ctx.scfg.trailing.step_pct},
@@ -347,6 +355,32 @@ def build_app():
             return g
         return {"regime": ctx.orchestrator.last_regime,
                 "by_strategy": fin(by_strategy), "by_book": fin(by_book), "by_regime": fin(by_regime)}
+
+    @app.get("/fees")
+    def fees():
+        """On-chain trading-cost model: PancakeSwap swap fees + on-chain perp
+        fees/funding + BSC gas, the breakeven price move per book, and the
+        realized fees the agent has already paid."""
+        from .fees import fee_model
+        fm = fee_model()
+        paid = sum(t.fees_usd for t in ctx.engine.closed)
+        gross = sum(t.gross_pnl_usd for t in ctx.engine.closed)
+        net = sum(t.pnl_usd for t in ctx.engine.closed)
+        margin = ctx.rcfg.deposit_usd * ctx.scfg.margin.entry_pct_of_deposit
+        notional_perp = margin * ctx.scfg.perps_leverage
+        return {
+            "model": fm.summary(ctx.rcfg.deposit_usd, ctx.scfg.margin.entry_pct_of_deposit, ctx.scfg.perps_leverage),
+            "simulate_fees": ctx.engine._simulate_fees,
+            "min_edge_gate": ctx.scfg.min_edge_gate,
+            "realized": {"gross_usd": round(gross, 2), "fees_usd": round(paid, 2), "net_usd": round(net, 2),
+                         "fee_drag_pct_of_gross": round(paid / gross * 100, 1) if gross > 0 else None},
+            "breakeven_move_pct_incl_gas": {
+                "spot": round(fm.breakeven_move_pct("spot") + fm.gas_usd * 2 / max(margin, 1e-9) * 100, 3),
+                "perp": round(fm.breakeven_move_pct("perp") + fm.gas_usd * 2 / max(notional_perp, 1e-9) * 100, 3),
+            },
+            "note": "Gas is a fixed $ per action, so it dominates on small notional. "
+                    "Breakeven falls as deposit/position size rises.",
+        }
 
     @app.post("/backtest/perf")
     def set_backtest_perf(fast_backtest: Optional[bool] = None,
