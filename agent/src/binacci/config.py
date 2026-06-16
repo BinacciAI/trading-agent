@@ -391,6 +391,10 @@ class StrategyConfig(BaseSettings):
     #: 0.40%) instead of insta-closing. 1.0 = legacy behaviour. Applied on top
     #: of any per-strategy target_mult. Override: BINACCI_PERPS_TARGET_MULT.
     perps_target_mult: float = 2.0
+    #: Quality gate: minimum proposal strength (0..1) for a signal to park/fill.
+    #: Higher = fewer, higher-conviction trades and a smoother equity curve.
+    #: 0 keeps every setup. Override: BINACCI_MIN_STRENGTH.
+    min_signal_strength: float = 0.0
 
     #: Named risk preset. Applied by :meth:`load` (and the runtime switcher),
     #: NOT by the bare constructor — so unit tests keep the raw defaults.
@@ -430,6 +434,21 @@ class StrategyConfig(BaseSettings):
             cfg.perps_target_mult = max(1.0, float(os.environ.get("BINACCI_PERPS_TARGET_MULT", cfg.perps_target_mult)))
         except (TypeError, ValueError):
             pass
+        try:
+            cfg.min_signal_strength = max(0.0, min(1.0, float(os.environ.get("BINACCI_MIN_STRENGTH", cfg.min_signal_strength))))
+        except (TypeError, ValueError):
+            pass
+        # Tighten exits live without a redeploy (locks profit sooner -> less
+        # give-back, smoother curve). Defaults unchanged unless these are set.
+        for _env, _attr in (("BINACCI_TRAIL_TRIGGER", "trigger_pct"),
+                            ("BINACCI_TRAIL_INITIAL", "initial_sl_pct"),
+                            ("BINACCI_TRAIL_STEP", "step_pct")):
+            _v = os.environ.get(_env)
+            if _v is not None:
+                try:
+                    setattr(cfg.trailing, _attr, max(0.0, float(_v)))
+                except (TypeError, ValueError):
+                    pass
         cfg.export_runtime_env()
         return cfg
 

@@ -153,6 +153,14 @@ class Orchestrator:
             self._record(trace)
             return trace
         trace.add(GateStep.ZONE, True, ",".join(proposal.reasons) or "in zone")
+        # Quality gate: only the strongest setups earn a slot. Fewer, higher-
+        # conviction fills => a smoother, compounding curve (vs. filling every
+        # slot with marginal signals).
+        if proposal.strength < self.cfg.min_signal_strength:
+            trace.add(GateStep.FILTERS, False,
+                      f"strength {proposal.strength:.2f} < gate {self.cfg.min_signal_strength:.2f}")
+            self._record(trace)
+            return trace
         trace.add(GateStep.FILTERS, True, str(proposal.meta.get("filters", "")) or "confirmed")
 
         # 04 — macro (per-strategy: some are explicit counter-trend fades)
