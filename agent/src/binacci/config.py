@@ -172,6 +172,24 @@ RISK_PRESETS: dict[RiskMode, dict] = {
 }
 
 
+#: Regime-weighted allocation. The macro regime (from CMC global metrics + F&G)
+#: tilts capital toward the strategies that fit it by scaling per-entry size in
+#: [0,1] (1.0 = full, <1 = trimmed). Weights never exceed 1.0, so the risk
+#: envelope is only ever reduced — never amplified. risk_off naturally cuts the
+#: long-only spot strategies while keeping the both-ways perp fades working.
+REGIME_WEIGHTS: dict[str, dict[str, float]] = {
+    "risk_on":  {"reaction": 1.0, "momentum_breakout": 1.0, "trend_follow": 1.0,
+                 "mean_reversion": 0.5, "volatility_squeeze": 0.9,
+                 "vwap_reversion": 0.5, "liquidity_sweep": 0.7},
+    "chop":     {"reaction": 0.9, "momentum_breakout": 0.5, "trend_follow": 0.5,
+                 "mean_reversion": 1.0, "volatility_squeeze": 0.9,
+                 "vwap_reversion": 1.0, "liquidity_sweep": 1.0},
+    "risk_off": {"reaction": 0.6, "momentum_breakout": 0.3, "trend_follow": 0.3,
+                 "mean_reversion": 0.8, "volatility_squeeze": 0.7,
+                 "vwap_reversion": 0.8, "liquidity_sweep": 0.9},
+}
+
+
 class FilterConfig(BaseModel):
     """Entry filters (SimA confirmation set + macro gate)."""
 
@@ -395,6 +413,9 @@ class StrategyConfig(BaseSettings):
     #: Higher = fewer, higher-conviction trades and a smoother equity curve.
     #: 0 keeps every setup. Override: BINACCI_MIN_STRENGTH.
     min_signal_strength: float = 0.0
+    #: Regime-weighted allocation: tilt per-entry size by the macro regime.
+    #: Disable with BINACCI_REGIME_WEIGHTING=false.
+    regime_weighting: bool = True
 
     #: Named risk preset. Applied by :meth:`load` (and the runtime switcher),
     #: NOT by the bare constructor — so unit tests keep the raw defaults.
@@ -449,6 +470,9 @@ class StrategyConfig(BaseSettings):
                     setattr(cfg.trailing, _attr, max(0.0, float(_v)))
                 except (TypeError, ValueError):
                     pass
+        _rw = os.environ.get("BINACCI_REGIME_WEIGHTING")
+        if _rw is not None:
+            cfg.regime_weighting = _rw.strip().lower() in ("1", "true", "yes", "on")
         cfg.export_runtime_env()
         return cfg
 
@@ -500,6 +524,13 @@ class StrategyConfig(BaseSettings):
         """Max open positions a single book may hold (reserves room for the
         other book so spot and perps are always live together)."""
         return max(1, int(self.risk.max_positions * self.book_share + 0.999))
+
+    def regime_size_mult(self, regime: str, strategy: str) -> float:
+        """Per-entry size multiplier in [0,1] for a strategy in a regime.
+        1.0 when weighting is off or the regime/strategy is unmapped."""
+        if not self.regime_weighting:
+            return 1.0
+        return float(REGIME_WEIGHTS.get(regime, {}).get(strategy, 1.0))
 
     def target_for(self, tf: Timeframe) -> float:
         return self.targets_pct.get(tf, DEFAULT_TARGETS[tf])

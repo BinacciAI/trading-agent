@@ -140,6 +140,8 @@ def build_app():
         snap["allow_shorts"] = ctx.scfg.allow_shorts
         snap["trade_mode"] = "spot+perps"
         snap["books"] = _book_split(ctx)
+        snap["regime"] = ctx.orchestrator.last_regime
+        snap["regime_weighting"] = ctx.scfg.regime_weighting
         snap["prices"] = {k: round(v, 6) for k, v in ctx.prices.items()}
         snap["explorer_tx_base"] = _explorer_tx_base(ctx.rcfg)
         return snap

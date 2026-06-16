@@ -92,6 +92,7 @@ class Orchestrator:
         self.on_open = None   # fn(position) -> None
         self.on_close = None  # fn(closed_trade) -> None
         self.on_average = None  # fn(position) -> None  (averaging add mirror)
+        self.last_regime = "unknown"  # latest macro regime (for size weighting + UI)
 
     # ---------------- background sims ----------------
 
@@ -114,6 +115,8 @@ class Orchestrator:
         max_age = timedelta(minutes=tf.minutes * (self.cfg.sims.extrema_window * 6))
         fresh = ref is not None and (ts - ref.ts) <= max_age
 
+        from .regime import classify_regime
+        self.last_regime = classify_regime(self.macro_provider()).get("regime", "unknown")
         last_trace: Optional[DecisionTrace] = None
         for strat in self.strategies:
             if len(df) < strat.min_bars:
@@ -125,7 +128,7 @@ class Orchestrator:
             else:
                 sides = [Side.LONG]
             for s in sides:
-                tr = self._evaluate_one(strat, symbol, tf, df, ts, s, ref, fresh)
+                tr = self._evaluate_one(strat, symbol, tf, df, ts, s, ref, fresh, self.last_regime)
                 last_trace = tr
                 # if this strategy parked an entry, don't also try the other side
                 if tr.gates and tr.gates[-1].step is GateStep.LEVEL and tr.gates[-1].passed:
@@ -134,7 +137,8 @@ class Orchestrator:
 
     def _evaluate_one(self, strat: Strategy, symbol: str, tf: Timeframe,
                       df: pd.DataFrame, ts: datetime, side: Side,
-                      ref: Optional[ReferencePoint], fresh: bool) -> DecisionTrace:
+                      ref: Optional[ReferencePoint], fresh: bool,
+                      regime: str = "unknown") -> DecisionTrace:
         trace = DecisionTrace(symbol=symbol, timeframe=tf, ts=ts, strategy=strat.name)
 
         # 01 — fresh reference (only strategies that anchor on one)
@@ -197,7 +201,9 @@ class Orchestrator:
             meta={"level_kind": proposal.level_kind,
                   "level_strength": proposal.strength,
                   "strategy": strat.name, "reasons": proposal.reasons,
-                  "market": self.cfg.market_for(strat.name)},
+                  "market": self.cfg.market_for(strat.name),
+                  "regime": regime,
+                  "size_mult": self.cfg.regime_size_mult(regime, strat.name)},
         )
         # replace any stale pending for same (symbol, tf, strategy)
         self.pending = [p for p in self.pending
