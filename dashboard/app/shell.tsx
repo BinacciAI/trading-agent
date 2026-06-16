@@ -32,7 +32,6 @@ type NavItem = { section: string } | { ic: string; label: string; href: string }
 const NAV: NavItem[] = [
   { section: "Overview" },
   { ic: "command", label: "Command Center", href: "/" },
-  { ic: "console", label: "Console", href: "/console" },
   { section: "Markets" },
   { ic: "signals", label: "Signals", href: "/signals" },
   { ic: "agents", label: "Agents", href: "/agents" },

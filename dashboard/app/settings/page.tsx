@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAgent, fmt } from "../useAgent";
+import { AttributionBars } from "../charts";
 
 type Risk = {
   risk_mode: string; max_positions: number; reserve_pct: number;
@@ -20,7 +21,16 @@ type Cfg = {
   credits: { per_day: number; per_month: number; breakdown: Record<string, number>; polled_symbols: number };
   cmc_key_set: boolean;
   fast_backtest?: boolean; backtest_workers?: number; cpu_count?: number;
+  min_signal_strength?: number; regime_weighting?: boolean; min_edge_gate?: boolean;
+  trailing?: { trigger: number; initial: number; step: number }; trading_halted?: boolean;
 };
+type Status = { regime?: string };
+type AttrRow = { trades: number; win_rate: number; net: number };
+type Attr = { by_strategy: Record<string, AttrRow> };
+type Fees = { min_edge_gate?: boolean;
+  realized?: { gross_usd: number; fees_usd: number; net_usd: number; fee_drag_pct_of_gross: number | null };
+  breakeven_move_pct_incl_gas?: { spot: number; perp: number };
+  model?: { swap_fee_pct_per_swap?: number; perp_fee_pct_per_side?: number; gas_usd_per_action?: number } };
 
 const MODE_BLURB: Record<string, string> = {
   conservative: "15 slots · larger entries · 10× perps · widest safety margin",
@@ -37,11 +47,40 @@ export default function Settings() {
   const [fastBt, setFastBt] = useState(false);
   const [workers, setWorkers] = useState(1);
   const [perfMsg, setPerfMsg] = useState("");
+  const [status] = useAgent<Status>("/status", {}, 5000);
+  const [attr] = useAgent<Attr>("/attribution", { by_strategy: {} }, 6000);
+  const [fees] = useAgent<Fees>("/fees", {}, 10000);
+  const [lev, setLev] = useState(""); const [str, setStr] = useState("");
+  const [tgt, setTgt] = useState(""); const [trg, setTrg] = useState("");
+  const [ini, setIni] = useState(""); const [stp, setStp] = useState("");
+  const [rw, setRw] = useState<boolean | null>(null);
+  const [synced, setSynced] = useState(false); const [ctlMsg, setCtlMsg] = useState("");
   useEffect(() => { if (cfg?.risk?.risk_mode) setMode(cfg.risk.risk_mode); }, [cfg?.risk?.risk_mode]);
   useEffect(() => {
     if (cfg) { setFastBt(!!cfg.fast_backtest); setWorkers(cfg.backtest_workers ?? 1); }
   }, [cfg?.fast_backtest, cfg?.backtest_workers]);
 
+  useEffect(() => {
+    if (synced || cfg?.perps_leverage == null) return;
+    setLev(String(cfg.perps_leverage)); setStr(String(cfg.min_signal_strength ?? 0));
+    setTgt(String(cfg.perps_target_mult ?? 2)); setTrg(String(cfg.trailing?.trigger ?? 0.4));
+    setIni(String(cfg.trailing?.initial ?? 0.2)); setStp(String(cfg.trailing?.step ?? 0.1));
+    setRw(cfg.regime_weighting ?? true); setSynced(true);
+  }, [cfg, synced]);
+  const applyCtl = async () => {
+    const q = new URLSearchParams();
+    if (lev) q.set("perps_leverage", lev); if (str !== "") q.set("min_strength", str);
+    if (tgt) q.set("perps_target_mult", tgt); if (trg) q.set("trail_trigger", trg);
+    if (ini) q.set("trail_initial", ini); if (stp) q.set("trail_step", stp);
+    if (rw != null) q.set("regime_weighting", String(rw));
+    try { const j = await (await fetch(`/agent/control?${q.toString()}`, { method: "POST" })).json();
+      setCtlMsg(j?.ok ? `Applied ${Object.keys(j.applied || {}).length} change(s) to the live engine.` : "failed"); }
+    catch { setCtlMsg("agent offline"); }
+    setTimeout(() => setCtlMsg(""), 4000);
+  };
+  const halted = cfg?.trading_halted;
+  const doHalt = async () => { try { await fetch("/agent/halt?reason=operator", { method: "POST" }); } catch {} setCtlMsg("Trading halted — new opens blocked."); setTimeout(() => setCtlMsg(""), 4000); };
+  const doResume = async () => { try { await fetch("/agent/venue/resume", { method: "POST" }); } catch {} setCtlMsg("Trading resumed."); setTimeout(() => setCtlMsg(""), 4000); };
   const cpu = Math.max(1, cfg?.cpu_count ?? 1);
   const workerOpts = Array.from(new Set([1, 2, 4, 8, cpu].filter((w) => w >= 1 && w <= cpu))).sort((a, b) => a - b);
 
@@ -80,6 +119,8 @@ export default function Settings() {
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
         <span className={live ? "badge green" : "badge gray"}>{live ? "LIVE" : "OFFLINE"}</span>
         <span className="badge gold">SETTINGS</span>
+        {status.regime && status.regime !== "unknown" && <span className="badge gray">{status.regime.replace("_", "-")}</span>}
+        {halted && <span className="badge red">HALTED</span>}
       </div>
 
       <h2 className="section">Risk Mode</h2>
@@ -103,6 +144,29 @@ export default function Settings() {
       <p style={{ fontSize: 12, color: "var(--text-muted)", minHeight: 18 }}>
         {MODE_BLURB[mode] || ""} {msg && <span className="badge cyan" style={{ marginLeft: 8 }}>{msg}</span>}
       </p>
+
+      <h2 className="section">Live Tuning</h2>
+      <div className="vault" style={{ marginBottom: 20, maxWidth: 820 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12 }}>
+          <Ctl label="Perps leverage" v={lev} set={setLev} step="1" />
+          <Ctl label="Strength gate (0–1)" v={str} set={setStr} step="0.05" />
+          <Ctl label="Perp TP mult" v={tgt} set={setTgt} step="0.25" />
+          <Ctl label="Trail trigger %" v={trg} set={setTrg} step="0.05" />
+          <Ctl label="Trail lock %" v={ini} set={setIni} step="0.02" />
+          <Ctl label="Trail step %" v={stp} set={setStp} step="0.01" />
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 14, flexWrap: "wrap" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-secondary)", cursor: "pointer" }}>
+            <input type="checkbox" checked={!!rw} onChange={(e) => setRw(e.target.checked)} /> Regime-weighted allocation
+          </label>
+          {halted
+            ? <button className="btn btn-secondary" onClick={doResume}>Resume</button>
+            : <button className="btn btn-danger" onClick={doHalt}>◼ Halt new opens</button>}
+          <span style={{ flex: 1 }} />
+          <button className="btn btn-primary" onClick={applyCtl}>Apply to engine</button>
+        </div>
+        {ctlMsg && <p style={{ fontSize: 12, marginTop: 8 }}><span className="badge cyan">{ctlMsg}</span></p>}
+      </div>
 
       <h2 className="section">Active Risk Envelope</h2>
       <div className="cards" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
@@ -142,6 +206,27 @@ export default function Settings() {
           <span className="v">{(cfg?.perp_strategies ?? []).map((s) => s.replace(/_/g, " ")).join(", ") || "—"}</span></div>
         <div className="row"><span>Spot strategies ({cfg?.spot_strategies?.length ?? 0})</span>
           <span className="v">{(cfg?.spot_strategies ?? []).map((s) => s.replace(/_/g, " ")).join(", ") || "—"}</span></div>
+      </div>
+
+      <h2 className="section">On-Chain Fees</h2>
+      <div className="vault" style={{ marginBottom: 20, maxWidth: 820 }}>
+        <div className="statline" style={{ border: "none", background: "transparent", padding: 0, marginBottom: 4 }}>
+          <span>Gross <b className={(fees.realized?.gross_usd ?? 0) >= 0 ? "pos" : "neg"}>{fmt(fees.realized?.gross_usd ?? 0)}</b></span>
+          <span>Fees paid <b className="neg">−{fmt(fees.realized?.fees_usd ?? 0)}</b></span>
+          <span>Net <b className={(fees.realized?.net_usd ?? 0) >= 0 ? "pos" : "neg"}>{fmt(fees.realized?.net_usd ?? 0)}</b></span>
+          <span>Fee drag <b>{fees.realized?.fee_drag_pct_of_gross != null ? fmt(fees.realized.fee_drag_pct_of_gross) + "%" : "—"}</b></span>
+        </div>
+        <div className="row"><span>Breakeven move · spot</span><span className="v">{fmt(fees.breakeven_move_pct_incl_gas?.spot ?? 0)}%</span></div>
+        <div className="row"><span>Breakeven move · perps</span><span className="v">{fmt(fees.breakeven_move_pct_incl_gas?.perp ?? 0)}%</span></div>
+        <div className="row"><span>Fee-aware entry gate</span><span className="v">{fees.min_edge_gate ? "ON" : "off (paper)"}</span></div>
+        <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 8 }}>
+          Swap {fees.model?.swap_fee_pct_per_swap ?? "—"}%/swap · perp {fees.model?.perp_fee_pct_per_side ?? "—"}%/side · gas ${fees.model?.gas_usd_per_action ?? "—"}/action. Gas is fixed per action, so breakeven falls as position size rises.
+        </p>
+      </div>
+
+      <h2 className="section">Net P/L by Strategy</h2>
+      <div className="chartbox" style={{ marginBottom: 22 }}>
+        <AttributionBars rows={Object.entries(attr.by_strategy).map(([label, a]) => ({ label, net: a.net }))} empty="no realized/open P/L yet" />
       </div>
 
       <h2 className="section">Backtest Performance</h2>
@@ -207,5 +292,16 @@ export default function Settings() {
         </p>
       </div>
     </main>
+  );
+}
+
+function Ctl({ label, v, set, step }: { label: string; v: string; set: (s: string) => void; step: string }) {
+  return (
+    <div className="sel-wrap">
+      <span className="sel-lbl">{label}</span>
+      <input type="number" step={step} value={v} onChange={(e) => set(e.target.value)}
+        style={{ background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: "var(--radius-md)",
+          color: "var(--text-primary)", padding: "8px 12px", fontFamily: "var(--font-mono)", fontSize: 13, outline: "none" }} />
+    </div>
   );
 }
