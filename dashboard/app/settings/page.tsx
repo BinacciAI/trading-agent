@@ -33,9 +33,9 @@ type Fees = { min_edge_gate?: boolean;
   model?: { swap_fee_pct_per_swap?: number; perp_fee_pct_per_side?: number; gas_usd_per_action?: number } };
 
 const MODE_BLURB: Record<string, string> = {
-  conservative: "15 slots · larger entries · 10× perps · widest safety margin",
-  balanced: "30 slots · mid-size entries · 25× perps · active across many markets",
-  aggressive: "50 slots · smallest entries · 50× perps · maximum market coverage",
+  conservative: "6 slots · largest entries · 10× perps · widest safety margin",
+  balanced: "10 slots · mid-size entries · 25× perps · balanced exposure",
+  aggressive: "14 slots · more, smaller entries · 50× perps · maximum aggression",
   custom: "manual — uses raw config values",
 };
 

@@ -166,9 +166,13 @@ class RiskMode(str, Enum):
 #: by the same factor, so the kill switch / liquidation sit proportionally
 #: closer. Tiers: conservative 10x, balanced 25x, aggressive 50x.
 RISK_PRESETS: dict[RiskMode, dict] = {
-    RiskMode.CONSERVATIVE: {"max_positions": 15, "entry_pct_of_working": 0.0050, "perps_leverage": 10.0},
-    RiskMode.BALANCED:     {"max_positions": 30, "entry_pct_of_working": 0.0035, "perps_leverage": 25.0},
-    RiskMode.AGGRESSIVE:   {"max_positions": 50, "entry_pct_of_working": 0.0025, "perps_leverage": 50.0},
+    # Fee-viable sizing for a small ($1k+) deposit: fewer/bigger positions so
+    # perp notional (margin x leverage) dwarfs fixed BSC gas. Each mode is a
+    # genuinely different envelope — slots, entry size, leverage AND averaging
+    # all move together, and aggregate deployed capital stays under working.
+    RiskMode.CONSERVATIVE: {"max_positions": 6,  "entry_pct_of_working": 0.035, "perps_leverage": 10.0, "averaging": (1.5, 1.0)},
+    RiskMode.BALANCED:     {"max_positions": 10, "entry_pct_of_working": 0.025, "perps_leverage": 25.0, "averaging": (2.0, 1.5)},
+    RiskMode.AGGRESSIVE:   {"max_positions": 14, "entry_pct_of_working": 0.020, "perps_leverage": 50.0, "averaging": (2.0, 1.5)},
 }
 
 
@@ -518,6 +522,9 @@ class StrategyConfig(BaseSettings):
             self.risk.max_positions = preset["max_positions"]
             self.margin.entry_pct_of_working = preset["entry_pct_of_working"]
             self.perps_leverage = preset["perps_leverage"]
+            avg = preset.get("averaging")
+            if avg:
+                self.margin.averaging_multipliers = tuple(avg)
         return self
 
     def risk_summary(self) -> dict:
