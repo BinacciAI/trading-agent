@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useAgent, fmt, isRealTx, shortTx } from "./useAgent";
+import { useAgent, fmt, isRealTx, isSimTx, dur } from "./useAgent";
 
 type Risk = { risk_mode: string; max_positions: number };
 type Status = {
@@ -14,10 +14,10 @@ type Status = {
 };
 type Pos = {
   symbol: string; tf: string; side?: string; market?: string; strategy?: string; level_kind?: string; state: string;
-  avg_entry: number; notional_usd: number; gain_pct: number; peak_gain_pct: number;
-  stop_pct: number | null; target_pct: number; averaging_done: number; leverage?: number;
+  avg_entry: number; mark?: number; notional_usd: number; gain_pct: number; unrealized_pnl_usd?: number; peak_gain_pct: number;
+  stop_pct: number | null; target_pct: number; averaging_done: number; leverage?: number; opened?: string | null; open_tx?: string;
 };
-type Trade = { symbol: string; tf: string; side?: string; market?: string; strategy?: string; pnl_usd: number; reason: string; closed: string | null; open_tx?: string; close_tx?: string };
+type Trade = { symbol: string; tf: string; side?: string; market?: string; strategy?: string; pnl_usd: number; pnl_pct?: number; reason: string; closed: string | null; opened?: string | null; held_s?: number | null; entry?: number; exit?: number; notional_usd?: number; leverage?: number; open_tx?: string; close_tx?: string };
 type VenueSafety = { venue: string; trading_halted?: boolean; halt_reason?: string;
   preflight_ok?: boolean | null; preflight_detail?: string; reconcile_state?: string;
   reconcile_detail?: string; mev_protect?: boolean; confirm_receipts?: boolean };
@@ -44,6 +44,30 @@ const px = (n: number) => {
   return n.toLocaleString("en-US", { maximumFractionDigits: d });
 };
 const pct = (n: number) => `${n >= 0 ? "+" : ""}${fmt(n)}%`;
+
+function TxBit({ hash, base, label }: { hash?: string; base: string; label?: string }) {
+  if (isRealTx(hash)) {
+    return (
+      <a className="txlink" href={`${base}${hash}`} target="_blank" rel="noopener noreferrer" title={`${label ?? ""} ${hash}`}>
+        {label ? `${label} ` : ""}↗
+      </a>
+    );
+  }
+  if (isSimTx(hash)) return <span className="muted" title={hash}>{label ? `${label} ` : ""}sim</span>;
+  return null;
+}
+
+function TxCol({ open, close, base }: { open?: string; close?: string; base: string }) {
+  const hasOpen = isRealTx(open) || isSimTx(open);
+  const hasClose = isRealTx(close) || isSimTx(close);
+  if (!hasOpen && !hasClose) return <span className="muted">—</span>;
+  return (
+    <span className="txcell">
+      <TxBit hash={open} base={base} label="open" />
+      <TxBit hash={close} base={base} label="close" />
+    </span>
+  );
+}
 
 function Spark({ data, up }: { data: number[]; up: boolean }) {
   if (!data || data.length < 2) return <div style={{ height: 54 }} />;
@@ -177,11 +201,12 @@ export default function Page() {
           <table>
             <thead><tr>
               <th>Market</th><th>Side</th><th>Book</th><th>Strategy</th><th>TF</th><th>State</th>
-              <th className="num">Entry</th><th className="num">Size</th><th className="num">Gain</th>
-              <th className="num">Peak</th><th className="num">Stop</th><th className="num">Target</th><th className="num">Adds</th>
+              <th className="num">Entry</th><th className="num">Mark</th><th className="num">Size</th>
+              <th className="num">Gain</th><th className="num">P/L $</th>
+              <th className="num">Peak</th><th className="num">Stop</th><th className="num">Target</th><th className="num">Adds</th><th>Tx</th>
             </tr></thead>
             <tbody>
-              {positions.length === 0 && <tr><td colSpan={13} className="empty">No open positions — agents watching, waiting for gate confirmation.</td></tr>}
+              {positions.length === 0 && <tr><td colSpan={16} className="empty">No open positions — agents watching, waiting for gate confirmation.</td></tr>}
               {positions.map((p, i) => (
                 <tr key={i}>
                   <td className="mkt">{p.symbol}<span className="quote">/USDT</span></td>
@@ -191,12 +216,15 @@ export default function Page() {
                   <td className="num dim">{p.tf}</td>
                   <td><span className={p.state === "sl_in_profit" ? "badge green" : "badge gold"}>{p.state === "sl_in_profit" ? "LOCKED" : "ACTIVE"}</span></td>
                   <td className="num">{px(p.avg_entry)}</td>
+                  <td className="num dim">{px(p.mark ?? p.avg_entry)}</td>
                   <td className="num">${fmt(p.notional_usd)}</td>
                   <td className={p.gain_pct >= 0 ? "num pos" : "num neg"}>{pct(p.gain_pct)}</td>
+                  <td className={(p.unrealized_pnl_usd ?? 0) >= 0 ? "num pos" : "num neg"}>{(p.unrealized_pnl_usd ?? 0) >= 0 ? "+" : ""}{fmt(p.unrealized_pnl_usd ?? 0)}</td>
                   <td className="num dim">{pct(p.peak_gain_pct)}</td>
                   <td className="num dim">{p.stop_pct != null ? pct(p.stop_pct) : "—"}</td>
                   <td className="num dim">{fmt(p.target_pct)}%</td>
                   <td className="num dim">{p.averaging_done}/2</td>
+                  <td><TxCol open={p.open_tx} base={base} /></td>
                 </tr>
               ))}
             </tbody>
@@ -206,9 +234,9 @@ export default function Page() {
         <h2 className="section">Recent Decisions</h2>
         <div className="tbl-wrap">
           <table>
-            <thead><tr><th className="num">Time</th><th>Market</th><th>Strategy</th><th>TF</th><th>Gate Audit</th><th>Result</th></tr></thead>
+            <thead><tr><th className="num">Time</th><th>Market</th><th>Strategy</th><th>TF</th><th>Gate Audit</th><th>Result</th><th>Blocking Reason</th></tr></thead>
             <tbody>
-              {traces.length === 0 && <tr><td colSpan={6} className="empty">No evaluations yet — markets warming up.</td></tr>}
+              {traces.length === 0 && <tr><td colSpan={7} className="empty">No evaluations yet — markets warming up.</td></tr>}
               {[...traces].reverse().slice(0, 14).map((t, i) => (
                 <tr key={i}>
                   <td className="num dim">{new Date(t.ts).toLocaleTimeString()}</td>
@@ -217,6 +245,9 @@ export default function Page() {
                   <td className="num dim">{t.tf}</td>
                   <td className="gates-cell">{t.gates.map((g, j) => (<span key={j} className={g.passed ? "gate ok" : "gate no"} title={g.detail}>{g.step.replace(/_/g, " ")}</span>))}</td>
                   <td>{t.entered ? <span className="badge green">ENTERED</span> : <span className="badge gray">SKIPPED</span>}</td>
+                  <td className="num dim" style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {(() => { const b = t.gates.find((g) => !g.passed); return b ? `${b.step.replace(/_/g, " ")}${b.detail ? `: ${b.detail}` : ""}` : "all gates passed"; })()}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -226,9 +257,9 @@ export default function Page() {
         <h2 className="section">Closed Trades</h2>
         <div className="tbl-wrap">
           <table>
-            <thead><tr><th>Market</th><th>Side</th><th>Book</th><th>Strategy</th><th>TF</th><th>Exit</th><th className="num">P/L</th><th className="num">Closed</th><th>Tx</th></tr></thead>
+            <thead><tr><th>Market</th><th>Side</th><th>Book</th><th>Strategy</th><th>TF</th><th className="num">Entry</th><th className="num">Exit</th><th>Reason</th><th className="num">P/L</th><th className="num">P/L %</th><th className="num">Held</th><th className="num">Closed</th><th>Tx</th></tr></thead>
             <tbody>
-              {trades.length === 0 && <tr><td colSpan={9} className="empty">No closed trades yet.</td></tr>}
+              {trades.length === 0 && <tr><td colSpan={13} className="empty">No closed trades yet.</td></tr>}
               {[...trades].reverse().slice(0, 20).map((t, i) => (
                 <tr key={i}>
                   <td className="mkt">{t.symbol}<span className="quote">/USDT</span></td>
@@ -236,18 +267,14 @@ export default function Page() {
                   <td><Book m={t.market} /></td>
                   <td><span className="badge cyan">{sLabel(t.strategy)}</span></td>
                   <td className="num dim">{t.tf}</td>
+                  <td className="num">{t.entry ? px(t.entry) : "—"}</td>
+                  <td className="num">{t.exit ? px(t.exit) : "—"}</td>
                   <td><span className={t.reason === "take_profit" ? "badge green" : t.reason === "kill_switch" || t.reason === "hard_stop" ? "badge red" : "badge gold"}>{t.reason.replace(/_/g, " ").toUpperCase()}</span></td>
                   <td className={t.pnl_usd >= 0 ? "num pos" : "num neg"}>{t.pnl_usd >= 0 ? "+" : ""}{fmt(t.pnl_usd)}</td>
+                  <td className={(t.pnl_pct ?? 0) >= 0 ? "num pos" : "num neg"}>{t.pnl_pct != null ? pct(t.pnl_pct) : "—"}</td>
+                  <td className="num dim">{dur(t.held_s)}</td>
                   <td className="num dim">{t.closed ? new Date(t.closed).toLocaleString() : "—"}</td>
-                  <td className="txcell">
-                    {isRealTx(t.open_tx) && (
-                      <a className="txlink" href={`${base}${t.open_tx}`} target="_blank" rel="noopener noreferrer" title={`open ${t.open_tx}`}>open ↗</a>
-                    )}
-                    {isRealTx(t.close_tx) && (
-                      <a className="txlink" href={`${base}${t.close_tx}`} target="_blank" rel="noopener noreferrer" title={`close ${t.close_tx}`}>close ↗</a>
-                    )}
-                    {!isRealTx(t.open_tx) && !isRealTx(t.close_tx) && <span className="muted">—</span>}
-                  </td>
+                  <td><TxCol open={t.open_tx} close={t.close_tx} base={base} /></td>
                 </tr>
               ))}
             </tbody>

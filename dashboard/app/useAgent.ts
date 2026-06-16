@@ -48,3 +48,18 @@ export const isRealTx = (h?: string | null): h is string =>
 /** Shorten a hash for display: 0x12ab34…cd9f */
 export const shortTx = (h: string) =>
   h.length > 14 ? `${h.slice(0, 8)}…${h.slice(-4)}` : h;
+
+/** A simulated (paper) fill id, e.g. "paper-3" / "paper-close-7". */
+export const isSimTx = (h?: string | null): h is string =>
+  !!h && /^paper(-close)?-\d+$/.test(h);
+
+/** Compact duration from seconds: "45s", "12m", "3h 8m", "2d 4h". */
+export const dur = (s?: number | null) => {
+  if (s == null) return "—";
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+};
