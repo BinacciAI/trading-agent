@@ -156,27 +156,46 @@ def build_app():
                 "strategy": p.meta.get("strategy", "reaction"),
                 "level_kind": p.meta.get("level_kind", ""),
                 "state": p.state.value, "avg_entry": p.avg_entry,
+                "mark": round(px, 6),
                 "qty": p.qty, "notional_usd": p.notional_usd,
                 "gain_pct": round(p.gain_pct(px), 3),
+                "unrealized_pnl_usd": round(p.unrealized_pnl_usd(px), 2),
                 "peak_gain_pct": round(p.peak_gain_pct, 3),
                 "stop_pct": p.stop_pct, "target_pct": p.target_pct,
                 "averaging_done": p.averaging_done,
+                "opened": p.opened_ts.isoformat() if p.opened_ts else None,
                 "open_tx": p.meta.get("venue_tx", ""),
             })
         return out
 
     @app.get("/trades")
     def trades():
-        return [{
-            "symbol": t.position.symbol, "tf": t.position.timeframe.value,
-            "strategy": t.position.meta.get("strategy", "reaction"),
-            "side": t.position.side.value,
-            "market": ctx.scfg.market_for(t.position.meta.get("strategy", "reaction")),
-            "pnl_usd": round(t.pnl_usd, 2), "reason": t.reason,
-            "closed": t.position.closed_ts.isoformat() if t.position.closed_ts else None,
-            "open_tx": t.position.meta.get("venue_tx", ""),
-            "close_tx": t.position.meta.get("venue_close_tx", ""),
-        } for t in ctx.engine.closed]
+        out = []
+        for t in ctx.engine.closed:
+            pos = t.position
+            exit_fill = next((f for f in reversed(pos.fills) if f.tag == "exit"), None)
+            exit_px = (exit_fill.price if exit_fill else 0.0) or pos.meta.get("venue_close_fill", 0.0)
+            notional = pos.notional_usd
+            held = ((pos.closed_ts - pos.opened_ts).total_seconds()
+                    if pos.closed_ts and pos.opened_ts else None)
+            out.append({
+                "symbol": pos.symbol, "tf": pos.timeframe.value,
+                "strategy": pos.meta.get("strategy", "reaction"),
+                "side": pos.side.value,
+                "market": ctx.scfg.market_for(pos.meta.get("strategy", "reaction")),
+                "entry": round(pos.avg_entry, 6), "exit": round(exit_px, 6),
+                "notional_usd": round(notional, 2),
+                "leverage": pos.meta.get("leverage", 1),
+                "pnl_usd": round(t.pnl_usd, 2),
+                "pnl_pct": round((t.pnl_usd / notional * 100) if notional else 0.0, 3),
+                "reason": t.reason,
+                "opened": pos.opened_ts.isoformat() if pos.opened_ts else None,
+                "closed": pos.closed_ts.isoformat() if pos.closed_ts else None,
+                "held_s": round(held) if held is not None else None,
+                "open_tx": pos.meta.get("venue_tx", ""),
+                "close_tx": pos.meta.get("venue_close_tx", ""),
+            })
+        return out
 
     @app.get("/traces")
     def traces(limit: int = 50):

@@ -187,10 +187,13 @@ class LiveLoop:
         self.reconcile_state: str = "n/a"   # n/a | clean | pending_ack | mismatch
         self.reconcile_detail: str = ""
         self.onchain_balance_usd: Optional[float] = None
-        if rcfg.venue != "paper":
-            self.orch.on_open = self._venue_open
-            self.orch.on_average = self._venue_average
-            self.orch.on_close = self._venue_close
+        # Wire venue hooks in EVERY mode. Paper records its simulated fills and
+        # paper-N ids (so the execution log + Tx column populate); real venues
+        # additionally reconcile P&L to the on-chain fill and roll back on
+        # failure. Preflight + boot reconcile stay real-venue-only (see run()).
+        self.orch.on_open = self._venue_open
+        self.orch.on_average = self._venue_average
+        self.orch.on_close = self._venue_close
 
     def _venue_for(self, pos) -> Venue:
         market = self.scfg.market_for(pos.meta.get("strategy", "reaction"))
@@ -238,7 +241,9 @@ class LiveLoop:
             if res.fill_price:
                 pos.meta["venue_fill_price"] = res.fill_price
                 # blocker 2: book P&L on the REAL fill, not the limit level
-                self.engine.reconcile_open_fill(pos, res.fill_price)
+                # (paper keeps its booked price so demo numbers don't drift)
+                if self.rcfg.venue != "paper":
+                    self.engine.reconcile_open_fill(pos, res.fill_price)
             if res.status == "unconfirmed":
                 pos.meta["unconfirmed_open"] = True
                 log.warning("open tx unconfirmed for %s: %s (kept; reconcile later)",
@@ -271,7 +276,7 @@ class LiveLoop:
         })
         if res.ok:
             pos.meta.setdefault("avg_txs", []).append(res.tx_or_id)
-            if res.fill_price:
+            if res.fill_price and self.rcfg.venue != "paper":
                 self.engine.reconcile_average_fill(pos, res.fill_price)
         else:
             self.engine.rollback_average(pos)
@@ -294,7 +299,8 @@ class LiveLoop:
             if res.fill_price:
                 pos.meta["venue_close_fill"] = res.fill_price
                 # blocker 2: realized P&L from the REAL exit fill
-                self.engine.reconcile_close_fill(trade, res.fill_price)
+                if self.rcfg.venue != "paper":
+                    self.engine.reconcile_close_fill(trade, res.fill_price)
             if res.status == "unconfirmed":
                 pos.meta["unconfirmed_close"] = True
                 log.warning("close tx unconfirmed for %s: %s", pos.symbol, res.tx_or_id)
