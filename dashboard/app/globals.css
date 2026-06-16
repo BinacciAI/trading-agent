@@ -72,9 +72,7 @@ a { color: inherit; text-decoration: none; }
 }
 .brandmark {
   border-radius: 8px;
-  border: 1px solid var(--border-gold);
-  background: rgba(245, 185, 63, 0.04);
-  box-shadow: 0 0 18px rgba(245, 185, 63, 0.12);
+  border: 1px solid var(--border-soft);
 }
 .wordmark {
   font-family: var(--font-display);
@@ -103,10 +101,11 @@ a { color: inherit; text-decoration: none; }
   overflow-y: auto;
 }
 .sidebar .nav-label {
-  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.2em;
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.18em;
   text-transform: uppercase; color: var(--text-muted);
-  padding: 0 12px 8px;
+  padding: 0 12px 6px; margin-top: 16px;
 }
+.sidebar > .nav-label:first-child { margin-top: 2px; }
 .nav-item {
   display: flex; align-items: center; gap: 10px;
   padding: 9px 12px; border-radius: var(--radius-sm);
@@ -252,9 +251,9 @@ thead th { background: var(--bg-elev); }
 
 /* Badges */
 .badge {
-  display: inline-block; padding: 2.5px 9px; border-radius: 6px;
-  font-family: var(--font-mono); font-size: 9.5px; font-weight: 600;
-  letter-spacing: 0.12em; text-transform: uppercase; border: 1px solid; white-space: nowrap;
+  display: inline-block; padding: 2px 7px; border-radius: 5px;
+  font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; border: 1px solid; white-space: nowrap;
 }
 .badge.gold  { color: var(--brand-gold); border-color: var(--border-gold); background: rgba(245,185,63,0.08); }
 .badge.cyan  { color: var(--brand-cyan); border-color: var(--border-cyan); background: rgba(25,217,255,0.07); }
@@ -558,3 +557,36 @@ h2.section::after { content: ""; flex: 1; height: 1px;
 }
 .safety-banner strong { letter-spacing: 0.04em; }
 .safety-hint { margin-left: auto; opacity: 0.8; font-family: var(--font-mono, monospace); font-size: 11px; }
+
+/* ============================================================
+   Charts — institutional, minimal chart junk
+   ============================================================ */
+.chartbox { background: var(--gradient-panel); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg); padding: 14px 16px 8px; box-shadow: 0 1px 0 rgba(255,255,255,0.02), 0 10px 30px rgba(0,0,0,0.22); }
+.chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.chart-title { font-family: var(--font-display); font-weight: 600; font-size: 13px; color: var(--text-primary); letter-spacing: 0.01em; }
+.chart-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.chart-area { position: relative; }
+.chart-empty { color: var(--text-muted); font-size: 12px; padding: 28px 4px; text-align: center; }
+.ylabel { position: absolute; right: 2px; font-family: var(--font-mono); font-size: 9.5px;
+  color: var(--text-muted); background: rgba(5,6,7,0.55); padding: 0 4px; border-radius: 3px; pointer-events: none; }
+.ylabel.ymax { top: 2px; } .ylabel.ymin { bottom: 4px; }
+
+.bars { display: flex; flex-direction: column; gap: 9px; padding: 4px 2px; }
+.bar-row { display: grid; grid-template-columns: 120px 1fr 76px; align-items: center; gap: 10px; }
+.bar-label { font-size: 12px; color: var(--text-secondary); text-transform: capitalize; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar-track { height: 9px; background: rgba(255,255,255,0.04); border-radius: 5px; overflow: hidden; }
+.bar { height: 100%; border-radius: 5px; }
+.bar.pos { background: linear-gradient(90deg, rgba(24,200,120,0.5), var(--profit)); }
+.bar.neg { background: linear-gradient(90deg, rgba(255,77,77,0.5), var(--loss)); }
+.bar-val { font-family: var(--font-mono); font-size: 12px; text-align: right; }
+.bar-val.pos { color: var(--profit); } .bar-val.neg { color: var(--loss); }
+
+/* Console compact status strip (no duplication of Command Center KPIs) */
+.statline { display: flex; flex-wrap: wrap; gap: 22px; align-items: baseline;
+  background: var(--gradient-panel); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md); padding: 12px 16px; margin-bottom: 18px;
+  font-size: 12.5px; color: var(--text-secondary); }
+.statline b { font-family: var(--font-mono); color: var(--text-primary); margin-left: 6px; font-size: 13px; }
+.statline b.pos { color: var(--profit); } .statline b.neg { color: var(--loss); }
+.statline b.gold { color: var(--brand-gold); } .statline b.cyan { color: var(--brand-cyan); }

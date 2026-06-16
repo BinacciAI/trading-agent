@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { EquityArea } from "./charts";
 import { useAgent, fmt, isRealTx, isSimTx, dur } from "./useAgent";
 
 type Risk = { risk_mode: string; max_positions: number };
@@ -66,22 +67,6 @@ function TxCol({ open, close, base }: { open?: string; close?: string; base: str
       <TxBit hash={open} base={base} label="open" />
       <TxBit hash={close} base={base} label="close" />
     </span>
-  );
-}
-
-function Spark({ data, up }: { data: number[]; up: boolean }) {
-  if (!data || data.length < 2) return <div style={{ height: 54 }} />;
-  const w = 280, h = 54; const min = Math.min(...data), max = Math.max(...data); const rng = max - min || 1;
-  const pts = data.map((v, i) => `${(i / (data.length - 1)) * w},${h - 3 - ((v - min) / rng) * (h - 6)}`).join(" ");
-  const col = up ? "var(--profit)" : "var(--loss)";
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 54 }} preserveAspectRatio="none">
-      <defs><linearGradient id="hsp" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stopColor={up ? "rgba(24,200,120,0.3)" : "rgba(255,77,77,0.28)"} />
-        <stop offset="100%" stopColor="rgba(0,0,0,0)" /></linearGradient></defs>
-      <polygon points={`0,${h} ${pts} ${w},${h}`} fill="url(#hsp)" />
-      <polyline points={pts} fill="none" stroke={col} strokeWidth={1.75} vectorEffect="non-scaling-stroke" />
-    </svg>
   );
 }
 
@@ -154,18 +139,16 @@ export default function Page() {
               <span className="muted"> total P/L · realized {realized >= 0 ? "+" : ""}{fmt(realized)} · unrealized {unreal >= 0 ? "+" : ""}{fmt(unreal)}</span>
             </div>
             <div className="hero-tags">
-              <span className={live ? "badge green" : "badge gray"}>{live ? "LIVE · PAPER" : "OFFLINE"}</span>
+              <span className={live ? "badge green" : "badge gray"}>{live ? "LIVE" : "OFFLINE"}</span>
               <span className={status?.kill_switch_fired ? "pill dead" : "pill"}><span className="dot" />
-                {status?.kill_switch_fired ? "Kill Switch Fired" : live ? "Agents Running" : "Connecting…"}</span>
-              <span className="badge gold" style={{ textTransform: "capitalize" }}>{mode} mode</span>
-              <span className="badge cyan">{markets} markets</span>
-              <span className="badge gold">{activeStrats.length} strategies</span>
-              <span className="badge green">SPOT + PERPS{cfg?.perps_leverage ? ` · ${fmt(cfg.perps_leverage)}×` : ""}</span>
+                {status?.kill_switch_fired ? "Kill switch fired" : live ? "Running" : "Connecting"}</span>
+              {(status as any)?.regime && (status as any).regime !== "unknown" &&
+                <span className="badge gray">{String((status as any).regime).replace("_", "-")}</span>}
             </div>
           </div>
           <div className="hero-right">
-            <div className="eyebrow" style={{ marginBottom: 6 }}>Equity · live</div>
-            <Spark data={eq} up={pnl >= 0} />
+            <EquityArea data={eq} title="Equity"
+              sub={`${eq.length} pts · ${pnl >= 0 ? "+" : ""}${fmt(pnl)} today`} />
           </div>
         </div>
 
@@ -206,7 +189,7 @@ export default function Page() {
               <th className="num">Peak</th><th className="num">Stop</th><th className="num">Target</th><th className="num">Adds</th><th>Tx</th>
             </tr></thead>
             <tbody>
-              {positions.length === 0 && <tr><td colSpan={16} className="empty">No open positions — agents watching, waiting for gate confirmation.</td></tr>}
+              {positions.length === 0 && <tr><td colSpan={16} className="empty">No open positions.</td></tr>}
               {positions.map((p, i) => (
                 <tr key={i}>
                   <td className="mkt">{p.symbol}<span className="quote">/USDT</span></td>
@@ -236,7 +219,7 @@ export default function Page() {
           <table>
             <thead><tr><th className="num">Time</th><th>Market</th><th>Strategy</th><th>TF</th><th>Gate Audit</th><th>Result</th><th>Blocking Reason</th></tr></thead>
             <tbody>
-              {traces.length === 0 && <tr><td colSpan={7} className="empty">No evaluations yet — markets warming up.</td></tr>}
+              {traces.length === 0 && <tr><td colSpan={7} className="empty">Warming up — no evaluations yet.</td></tr>}
               {[...traces].reverse().slice(0, 14).map((t, i) => (
                 <tr key={i}>
                   <td className="num dim">{new Date(t.ts).toLocaleTimeString()}</td>

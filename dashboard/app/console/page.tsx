@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAgent, fmt } from "../useAgent";
+import { AttributionBars } from "../charts";
 
 type Book = { open: number; long: number; short: number; realized: number };
 type Status = {
@@ -123,13 +124,12 @@ export default function Console() {
       </div>
       {msg && <div className="demo-note">{msg}</div>}
 
-      <div className="cards" style={{ marginBottom: 18 }}>
-        <div className="card"><div className="lbl">Equity</div><div className="val gold">${fmt(status.equity_usd ?? 0)}</div></div>
-        <div className="card"><div className="lbl">Net P/L</div><div className={realized + unreal >= 0 ? "val pos" : "val neg"}>{realized + unreal >= 0 ? "+" : ""}{fmt(realized + unreal)}</div></div>
-        <div className="card"><div className="lbl">Realized</div><div className={realized >= 0 ? "val pos" : "val neg"}>{realized >= 0 ? "+" : ""}{fmt(realized)}</div></div>
-        <div className="card"><div className="lbl">Unrealized</div><div className={unreal >= 0 ? "val pos" : "val neg"}>{unreal >= 0 ? "+" : ""}{fmt(unreal)}</div></div>
-        <div className="card"><div className="lbl">Open / Slots</div><div className="val">{status.slots_used ?? 0}/{status.slots_max ?? 0}</div></div>
-        <div className="card"><div className="lbl">Risk Mode</div><div className="val cyan" style={{ textTransform: "capitalize", fontSize: 18 }}>{mode}</div></div>
+      <div className="statline">
+        <span>Equity <b className="gold">${fmt(status.equity_usd ?? 0)}</b></span>
+        <span>Net <b className={realized + unreal >= 0 ? "pos" : "neg"}>{realized + unreal >= 0 ? "+" : ""}{fmt(realized + unreal)}</b></span>
+        <span>Open <b>{status.slots_used ?? 0}/{status.slots_max ?? 0}</b></span>
+        <span>Mode <b className="cyan" style={{ textTransform: "capitalize" }}>{mode}</b></span>
+        <span>Leverage <b>{cfg.perps_leverage ?? "—"}×</b></span>
       </div>
 
       <h2 className="section">Live Controls — Apply to the Running Engine</h2>
@@ -158,7 +158,11 @@ export default function Console() {
         </div>
       </div>
 
-      {attrTable("P/L Attribution — by Strategy", attr.by_strategy)}
+      <h2 className="section">P/L Attribution — Net by Strategy</h2>
+      <div className="chartbox" style={{ marginBottom: 20 }}>
+        <AttributionBars rows={Object.entries(attr.by_strategy).map(([label, r]) => ({ label, net: r.net }))}
+          empty="no closed/open P/L yet" />
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <div>{attrTable("by Book", attr.by_book)}</div>
         <div>{attrTable("by Regime", attr.by_regime)}</div>

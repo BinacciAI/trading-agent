@@ -31,6 +31,11 @@ class AgentContext:
             self.scfg.allow_shorts = shorts_env.strip().lower() in ("1", "true", "yes", "on")
         else:
             self.scfg.allow_shorts = self.rcfg.venue in ("paper", "perps")
+        # persisted operator choices (risk mode / leverage / knobs) win over
+        # env + defaults, so a redeploy never reverts the operator's settings.
+        self._data_dir = os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data")
+        from .persistence import apply_operator_settings
+        apply_operator_settings(self.scfg, self._data_dir)
         self.engine = ExecutionEngine(self.scfg, deposit_usd=self.rcfg.deposit_usd)
         self.orchestrator = Orchestrator(self.scfg, self.engine)
         from .live import LiveLoop
@@ -264,6 +269,9 @@ def build_app():
                     "modes": [m.value for m in RiskMode]}
         ctx.scfg.apply_risk_mode(rm)  # ctx.engine.cfg is the same object
         ctx.scfg.export_runtime_env()  # propagate leverage to venue/brain/monitors
+        from .persistence import save_operator_settings
+        save_operator_settings(getattr(ctx, "_data_dir", "/tmp/binacci-data"),
+                               {"risk_mode": rm.value, "perps_leverage": ctx.scfg.perps_leverage})
         return {"ok": True, "mode": rm.value, "risk": ctx.scfg.risk_summary(),
                 "perps_leverage": ctx.scfg.perps_leverage,
                 "perps_target_mult": ctx.scfg.perps_target_mult}
@@ -293,6 +301,12 @@ def build_app():
         if trail_step is not None:
             c.trailing.step_pct = max(0.01, float(trail_step)); applied["trail_step"] = c.trailing.step_pct
         c.export_runtime_env()
+        from .persistence import save_operator_settings
+        save_operator_settings(getattr(ctx, "_data_dir", "/tmp/binacci-data"), {
+            "perps_leverage": c.perps_leverage, "perps_target_mult": c.perps_target_mult,
+            "min_signal_strength": c.min_signal_strength, "regime_weighting": c.regime_weighting,
+            "trailing": {"trigger": c.trailing.trigger_pct, "initial": c.trailing.initial_sl_pct,
+                         "step": c.trailing.step_pct}})
         return {"ok": True, "applied": applied, "live": {
             "perps_leverage": c.perps_leverage, "perps_target_mult": c.perps_target_mult,
             "min_signal_strength": c.min_signal_strength, "regime_weighting": c.regime_weighting,

@@ -153,3 +153,63 @@ def load_state(engine: ExecutionEngine, orchestrator, path: Path) -> bool:
     except Exception:
         log.exception("state restore failed")
         return False
+
+
+# --------------------------------------------------------------------------
+# Operator settings — persist UI/console choices across restarts so a redeploy
+# never reverts the risk mode / leverage / knobs the operator selected.
+# --------------------------------------------------------------------------
+
+def _settings_path(data_dir) -> Path:
+    return Path(data_dir) / "operator_settings.json"
+
+
+def load_operator_settings(data_dir) -> dict:
+    try:
+        p = _settings_path(data_dir)
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except Exception:
+        log.exception("operator settings load failed")
+        return {}
+
+
+def save_operator_settings(data_dir, settings: dict) -> None:
+    """Merge + persist operator-chosen settings to the volume."""
+    try:
+        p = _settings_path(data_dir)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        cur = load_operator_settings(data_dir)
+        cur.update(settings)
+        p.write_text(json.dumps(cur), encoding="utf-8")
+    except Exception:
+        log.exception("operator settings save failed")
+
+
+def apply_operator_settings(cfg, data_dir) -> dict:
+    """Re-apply the operator's saved choices over a freshly-loaded cfg so a
+    UI/console change survives restarts (the saved file wins over env/defaults)."""
+    s = load_operator_settings(data_dir)
+    if not s:
+        return {}
+    try:
+        if s.get("risk_mode"):
+            cfg.apply_risk_mode(s["risk_mode"])
+        if "perps_leverage" in s:
+            cfg.perps_leverage = max(1.0, float(s["perps_leverage"]))
+        if "perps_target_mult" in s:
+            cfg.perps_target_mult = max(1.0, float(s["perps_target_mult"]))
+        if "min_signal_strength" in s:
+            cfg.min_signal_strength = max(0.0, min(1.0, float(s["min_signal_strength"])))
+        if "regime_weighting" in s:
+            cfg.regime_weighting = bool(s["regime_weighting"])
+        tr = s.get("trailing") or {}
+        if "trigger" in tr:
+            cfg.trailing.trigger_pct = max(0.0, float(tr["trigger"]))
+        if "initial" in tr:
+            cfg.trailing.initial_sl_pct = max(0.0, float(tr["initial"]))
+        if "step" in tr:
+            cfg.trailing.step_pct = max(0.01, float(tr["step"]))
+        cfg.export_runtime_env()
+    except Exception:
+        log.exception("operator settings apply failed")
+    return s

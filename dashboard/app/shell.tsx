@@ -28,17 +28,23 @@ function Icon({ name }: { name: string }) {
   );
 }
 
-const NAV = [
+type NavItem = { section: string } | { ic: string; label: string; href: string };
+const NAV: NavItem[] = [
+  { section: "Overview" },
   { ic: "command", label: "Command Center", href: "/" },
   { ic: "console", label: "Console", href: "/console" },
-  { ic: "competition", label: "Competition", href: "/competition" },
-  { ic: "agents", label: "Agents", href: "/agents" },
+  { section: "Markets" },
   { ic: "signals", label: "Signals", href: "/signals" },
+  { ic: "agents", label: "Agents", href: "/agents" },
+  { ic: "memory", label: "Market Memory", href: "/memory" },
+  { section: "Execution" },
   { ic: "logs", label: "Execution Logs", href: "/logs" },
   { ic: "risk", label: "Risk Vault", href: "/risk" },
-  { ic: "memory", label: "Market Memory", href: "/memory" },
+  { section: "Research" },
   { ic: "strategies", label: "Strategies", href: "/strategies" },
   { ic: "backtests", label: "Backtests", href: "/backtests" },
+  { section: "System" },
+  { ic: "competition", label: "Competition", href: "/competition" },
   { ic: "settings", label: "Settings", href: "/settings" },
 ];
 
@@ -49,17 +55,19 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       <header className="topbar">
         <img src="/binacci-logo.png" alt="Binacci" width={30} height={30} className="brandmark" />
         <div className="wordmark"><span className="b">BINACCI</span><span className="ai">AI</span></div>
-        <span className="topbar-tag">BNB · CMC · TRUST WALLET</span>
       </header>
       <div className="body">
         <nav className="sidebar">
-          <div className="nav-label">Navigate</div>
-          {NAV.map((n) => (
-            <Link key={n.label} href={n.href}
-                  className={path === n.href ? "nav-item active" : "nav-item"}>
-              <span className="ic"><Icon name={n.ic} /></span>{n.label}
-            </Link>
-          ))}
+          {NAV.map((n, i) =>
+            "section" in n ? (
+              <div key={i} className="nav-label">{n.section}</div>
+            ) : (
+              <Link key={n.href} href={n.href}
+                    className={path === n.href ? "nav-item active" : "nav-item"}>
+                <span className="ic"><Icon name={n.ic} /></span>{n.label}
+              </Link>
+            )
+          )}
           <div className="nav-foot">v0.2 · live on BSC</div>
         </nav>
         {children}
