@@ -16,6 +16,7 @@ type Cfg = {
   poll_only_verified: boolean; warmup_backfill: boolean; quote: string;
   live_timeframes: string[]; risk: Risk; risk_modes: string[];
   trade_mode?: string; allow_shorts?: boolean;
+  spot_enabled?: boolean; perps_enabled?: boolean;
   perps_leverage?: number; perps_target_mult?: number; perp_data_source?: string;
   book_cap?: number; perp_strategies?: string[]; spot_strategies?: string[];
   credits: { per_day: number; per_month: number; breakdown: Record<string, number>; polled_symbols: number };
@@ -75,6 +76,37 @@ export default function Settings() {
   const halted = cfg?.trading_halted;
   const doHalt = async () => { try { await fetch("/agent/halt?reason=operator", { method: "POST" }); } catch {} setCtlMsg("Trading halted — new opens blocked."); setTimeout(() => setCtlMsg(""), 4000); };
   const doResume = async () => { try { await fetch("/agent/venue/resume", { method: "POST" }); } catch {} setCtlMsg("Trading resumed."); setTimeout(() => setCtlMsg(""), 4000); };
+
+  // Books: activate/deactivate the Spot and Perps books. Deactivating flattens
+  // that book's open positions on the server (the operator confirms first).
+  const [bookBusy, setBookBusy] = useState(false);
+  const spotOn = cfg?.spot_enabled ?? true;
+  const perpsOn = cfg?.perps_enabled ?? true;
+  const toggleBook = async (which: "spot" | "perps", on: boolean) => {
+    const label = which === "spot" ? "Spot" : "Perps";
+    if (!on && !window.confirm(`Deactivate the ${label} book? Its open positions will be closed now.`)) return;
+    setBookBusy(true);
+    try {
+      const j = await (await fetch(`/agent/books?${which}=${on}`, { method: "POST" })).json();
+      setCtlMsg(j?.ok
+        ? `${label} ${on ? "activated" : "deactivated"}${j.closed ? ` — closed ${j.closed} position(s)` : ""}.`
+        : (j?.error || "failed"));
+    } catch { setCtlMsg("agent offline"); }
+    setBookBusy(false);
+    setTimeout(() => setCtlMsg(""), 5000);
+  };
+  const closeAll = async () => {
+    if (!window.confirm("Close ALL open positions now? This flattens both books at market.")) return;
+    setBookBusy(true);
+    try {
+      const j = await (await fetch("/agent/positions/close", { method: "POST" })).json();
+      setCtlMsg(j?.ok
+        ? `Closed ${j.closed} position(s) · realized ${fmt(j.realized_pnl_usd)} · ${j.open_remaining} still open.`
+        : "failed");
+    } catch { setCtlMsg("agent offline"); }
+    setBookBusy(false);
+    setTimeout(() => setCtlMsg(""), 6000);
+  };
 
   const r = cfg?.risk;
   const modes = cfg?.risk_modes?.filter((m) => m !== "custom") ?? ["conservative", "balanced", "aggressive"];
@@ -153,6 +185,29 @@ export default function Settings() {
 
       <h2 className="section">Live Tuning</h2>
       <div className="vault" style={{ marginBottom: 20, maxWidth: 820 }}>
+        <div style={{ marginBottom: 16 }}>
+          <div className="lbl" style={{ marginBottom: 8 }}>
+            Books <span className="badge gold" style={{ marginLeft: 6 }}>{(cfg?.trade_mode ?? "—").toUpperCase()}</span>
+          </div>
+          <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 10px", lineHeight: 1.6 }}>
+            Activate or deactivate each book. A deactivated book takes no new positions and its open
+            positions are closed immediately; the active book keeps trading. The choice persists across redeploys.
+          </p>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <button disabled={bookBusy} onClick={() => toggleBook("spot", !spotOn)}
+              className={spotOn ? "btn btn-primary" : "btn btn-secondary"} style={{ minWidth: 150 }}>
+              Spot · {spotOn ? "ON" : "OFF"}
+            </button>
+            <button disabled={bookBusy} onClick={() => toggleBook("perps", !perpsOn)}
+              className={perpsOn ? "btn btn-primary" : "btn btn-secondary"} style={{ minWidth: 150 }}>
+              Perps · {perpsOn ? "ON" : "OFF"}
+            </button>
+            <span style={{ flex: 1 }} />
+            <button disabled={bookBusy} className="btn btn-danger" onClick={closeAll}>
+              ✕ Close all positions
+            </button>
+          </div>
+        </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12 }}>
           <Ctl label="Perps leverage" v={lev} set={setLev} step="1" />
           <Ctl label="Strength gate (0–1)" v={str} set={setStr} step="0.05" />
@@ -205,7 +260,8 @@ export default function Settings() {
           <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>Perps trade both ways when enabled.</p></div>
         <div className="card"><div className="lbl">Trade Mode</div>
           <div className="val gold">{(cfg?.trade_mode ?? "spot+perps").toUpperCase()}</div>
-          <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>Both books run at once.</p></div>
+          <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>
+            Spot {spotOn ? "on" : "off"} · Perps {perpsOn ? "on" : "off"}. Toggle in Live Tuning.</p></div>
       </div>
       <div className="vault" style={{ maxWidth: 760, marginTop: 12 }}>
         <div className="row"><span>Perp strategies ({cfg?.perp_strategies?.length ?? 0})</span>

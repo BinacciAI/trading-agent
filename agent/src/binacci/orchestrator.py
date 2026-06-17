@@ -124,6 +124,10 @@ class Orchestrator:
         for strat in self.strategies:
             if len(df) < strat.min_bars:
                 continue
+            # skip strategies whose book is switched off — a disabled book takes
+            # no new positions (its open ones are still managed/flattened).
+            if not self.cfg.book_enabled(self.cfg.market_for(strat.name)):
+                continue
             # Spot strategies are long-only; perps strategies trade both ways
             # (when shorts are enabled). Both books run at the same time.
             if self.cfg.market_for(strat.name) == "perp" and self.cfg.allow_shorts:
@@ -307,6 +311,24 @@ class Orchestrator:
         # kill switch across the whole book
         closed += self.engine.check_kill_switch(prices, ts)
 
+        if self.on_close:
+            for trade in closed:
+                try:
+                    self.on_close(trade)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("on_close hook failed")
+        return closed
+
+    # ---------------- operator flatten ----------------
+
+    def flatten(self, prices: dict[str, float], ts: datetime,
+                market: Optional[str] = None, symbol: Optional[str] = None,
+                reason: str = "operator_flatten") -> list[ClosedTrade]:
+        """Force-close open positions (optionally one book/symbol) and mirror
+        each close on-chain through the venue hook — same discipline as a
+        kill-switch close: the engine decides, the venue follows."""
+        closed = self.engine.flatten(prices, ts, market=market, symbol=symbol, reason=reason)
         if self.on_close:
             for trade in closed:
                 try:
