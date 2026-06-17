@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAgent, fmt } from "../useAgent";
-import { AttributionBars } from "../charts";
+import { AttributionBars, CostBars } from "../charts";
 
 type Risk = {
   risk_mode: string; max_positions: number; reserve_pct: number;
@@ -26,7 +26,7 @@ type Cfg = {
 };
 type Status = { regime?: string };
 type AttrRow = { trades: number; win_rate: number; net: number };
-type Attr = { by_strategy: Record<string, AttrRow> };
+type Attr = { by_strategy: Record<string, AttrRow>; by_book?: Record<string, AttrRow>; by_regime?: Record<string, AttrRow> };
 type Fees = { min_edge_gate?: boolean;
   realized?: { gross_usd: number; fees_usd: number; net_usd: number; fee_drag_pct_of_gross: number | null };
   breakeven_move_pct_incl_gas?: { spot: number; perp: number };
@@ -228,11 +228,27 @@ export default function Settings() {
         <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 8 }}>
           Swap {fees.model?.swap_fee_pct_per_swap ?? "—"}%/swap · perp {fees.model?.perp_fee_pct_per_side ?? "—"}%/side · gas ${fees.model?.gas_usd_per_action ?? "—"}/action. Gas is fixed per action, so breakeven falls as position size rises.
         </p>
+        <div style={{ marginTop: 6 }}>
+          <div className="lbl" style={{ marginBottom: 8 }}>Cost to break even — fee vs gas</div>
+          <CostBars fees={fees} />
+        </div>
       </div>
 
       <h2 className="section">Net P/L by Strategy</h2>
       <div className="chartbox" style={{ marginBottom: 22 }}>
         <AttributionBars rows={Object.entries(attr.by_strategy).map(([label, a]) => ({ label, net: a.net }))} empty="no realized/open P/L yet" />
+      </div>
+
+      <h2 className="section">Net P/L by Book & Regime</h2>
+      <div className="cards" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", marginBottom: 22 }}>
+        <div className="chartbox">
+          <div className="lbl" style={{ marginBottom: 8 }}>By book (spot vs perp)</div>
+          <AttributionBars rows={Object.entries(attr.by_book ?? {}).map(([label, a]) => ({ label, net: a.net }))} empty="no book P/L yet" />
+        </div>
+        <div className="chartbox">
+          <div className="lbl" style={{ marginBottom: 8 }}>By macro regime</div>
+          <AttributionBars rows={Object.entries(attr.by_regime ?? {}).map(([label, a]) => ({ label, net: a.net }))} empty="no regime P/L yet" />
+        </div>
       </div>
 
       <h2 className="section">Runtime</h2>

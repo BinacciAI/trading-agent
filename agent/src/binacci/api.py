@@ -385,7 +385,8 @@ def build_app():
                 d["win_rate"] = round(d["wins"] / d["trades"] * 100, 1) if d["trades"] else 0.0
             return g
         return {"regime": ctx.orchestrator.last_regime,
-                "by_strategy": fin(by_strategy), "by_book": fin(by_book), "by_regime": fin(by_regime)}
+                "by_strategy": fin(by_strategy), "by_book": fin(by_book), "by_regime": fin(by_regime),
+                "series": ctx.loop.strat_series()}
 
     @app.get("/fees")
     def fees():

@@ -148,3 +148,93 @@ export function AttributionBars({ rows, empty }: { rows: { label: string; net: n
     </div>
   );
 }
+
+/* Drawdown from running peak — red area under the zero line. */
+export function DrawdownArea({ series, title }: { series: Pt[]; title: string }) {
+  if (!series || series.length < 2) {
+    return (<div className="chartbox"><div className="chart-head"><span className="chart-title">{title}</span></div>
+      <div className="chart-empty">accumulating drawdown…</div></div>);
+  }
+  let peak = -Infinity;
+  const dd = series.map((p) => { peak = Math.max(peak, p.v); return peak > 0 ? ((p.v - peak) / peak) * 100 : 0; });
+  const worst = Math.min(...dd, 0);
+  const W = 600, H = 120, padT = 10, padB = 16;
+  const lo = Math.min(worst * 1.15, -0.05);
+  const x = (i: number) => (i / (dd.length - 1)) * W;
+  const y = (v: number) => padT + (v / lo) * (H - padT - padB);
+  const line = dd.map((v, i) => `${x(i)},${y(v)}`).join(" ");
+  return (
+    <div className="chartbox">
+      <div className="chart-head"><span className="chart-title">{title}</span>
+        <span className="chart-sub">worst {worst.toFixed(2)}%</span></div>
+      <div className="chart-area">
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: 120, display: "block" }}>
+          <defs><linearGradient id="ddfill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="rgba(255,77,77,0.04)" /><stop offset="100%" stopColor="rgba(255,77,77,0.28)" /></linearGradient></defs>
+          <line x1="0" x2={W} y1={y(0)} y2={y(0)} stroke="var(--border-soft)" strokeWidth="1" vectorEffect="non-scaling-stroke" opacity="0.6" />
+          <polygon points={`0,${y(0)} ${line} ${W},${y(0)}`} fill="url(#ddfill)" />
+          <polyline points={line} fill="none" stroke="var(--loss)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+        </svg>
+        <span className="ylabel" style={{ top: "8%" }}>0%</span>
+        <span className="ylabel" style={{ top: "82%" }}>{lo.toFixed(1)}%</span>
+      </div>
+    </div>
+  );
+}
+
+/* Cost-to-break-even composition — exchange fee vs gas, spot vs perp. */
+export function CostBars({ fees }: { fees: { breakeven_move_pct_incl_gas?: { spot: number; perp: number }; model?: { breakeven_move_pct?: { spot: number; perp: number } } } }) {
+  const incl = fees?.breakeven_move_pct_incl_gas;
+  const feeOnly = fees?.model?.breakeven_move_pct;
+  if (!incl || !feeOnly) return <div className="chart-empty">no fee data yet</div>;
+  const rows = ([["Spot", "spot"], ["Perp", "perp"]] as const).map(([label, k]) => ({
+    label, total: incl[k], fee: feeOnly[k], gas: Math.max(0, incl[k] - feeOnly[k]),
+  }));
+  const max = Math.max(...rows.map((r) => r.total), 0.01);
+  return (
+    <div>
+      <div className="bars">
+        {rows.map((r) => (
+          <div className="bar-row" key={r.label}>
+            <span className="bar-label">{r.label}</span>
+            <div className="bar-track" style={{ display: "flex" }}>
+              <div className="bar costfee" style={{ width: `${(r.fee / max) * 100}%` }} title={`exchange fee ${r.fee}%`} />
+              <div className="bar costgas" style={{ width: `${(r.gas / max) * 100}%` }} title={`gas ${r.gas.toFixed(2)}%`} />
+            </div>
+            <span className="bar-val">{r.total}%</span>
+          </div>
+        ))}
+      </div>
+      <div className="bookbar-key" style={{ marginTop: 8 }}>
+        <span><i className="k costfee" /> exchange fee</span>
+        <span><i className="k costgas" /> gas (fixed)</span>
+      </div>
+    </div>
+  );
+}
+
+/* Per-strategy cumulative realized P/L — small multiples. */
+export function StratMultiples({ series, labels }:
+  { series: { t: number; by: Record<string, number> }[]; labels?: string[] }) {
+  if (!series || series.length < 2) return <div className="chart-empty">accumulating per-strategy history…</div>;
+  const keys = (labels && labels.length) ? labels
+    : Array.from(new Set(series.flatMap((s) => Object.keys(s.by))));
+  return (
+    <div className="multiples">
+      {keys.map((k) => {
+        let last = 0;
+        const arr = series.map((s) => { if (k in s.by) last = s.by[k]; return last; });
+        const val = arr[arr.length - 1];
+        return (
+          <div key={k} className="mult">
+            <div className="mult-head">
+              <span className="mult-name">{k.replace(/_/g, " ")}</span>
+              <span className={val >= 0 ? "mult-val pos" : "mult-val neg"}>{val >= 0 ? "+" : ""}{fmt(val)}</span>
+            </div>
+            <Sparkline data={arr} w={150} h={30} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}

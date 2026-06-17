@@ -1,7 +1,7 @@
 "use client";
 
 import { useAgent, fmt } from "../useAgent";
-import { AttributionBars } from "../charts";
+import { AttributionBars, StratMultiples } from "../charts";
 
 type Cat = {
   strategy: string; skill: string; title: string; philosophy: string;
@@ -16,6 +16,7 @@ type Strategies = {
 
 export default function StrategiesPage() {
   const [data, live] = useAgent<Strategies | null>("/strategies", null);
+  const [attr] = useAgent<{ series?: { t: number; by: Record<string, number> }[] }>("/attribution", {}, 8000);
   const cat = data?.catalog ?? [];
   const active = new Set(data?.active ?? []);
 
@@ -73,6 +74,15 @@ export default function StrategiesPage() {
             </div>
           );
         })}
+      </div>
+
+      <h2 className="section">Per-Strategy P/L Over Time</h2>
+      <p className="lede" style={{ marginBottom: 14 }}>
+        Cumulative realized P/L per strategy, sampled live. Diverging lines show which edges are
+        compounding and which are bleeding — the signal the meta-learner optimizes against.
+      </p>
+      <div className="chartbox" style={{ marginBottom: 24 }}>
+        <StratMultiples series={attr.series ?? []} labels={data?.active} />
       </div>
 
       <h2 className="section">Operations Agents</h2>

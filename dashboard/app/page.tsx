@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { EquityChart, Sparkline, BookBar } from "./charts";
+import { EquityChart, Sparkline, BookBar, DrawdownArea } from "./charts";
 import { useAgent, fmt, isRealTx, isSimTx, dur } from "./useAgent";
 
 type Risk = { risk_mode: string; max_positions: number };
@@ -175,6 +175,12 @@ export default function Page() {
           </div>
           </div>
         ); })()}
+
+        {eqPts.length > 1 && (
+          <div style={{ marginTop: 16 }}>
+            <DrawdownArea series={eqPts} title="Drawdown from Peak" />
+          </div>
+        )}
 
         {/* Strategy performance strip */}
         <h2 className="section">Strategy Performance</h2>

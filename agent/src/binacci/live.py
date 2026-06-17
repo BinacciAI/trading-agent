@@ -156,6 +156,7 @@ class LiveLoop:
         self.data_dir = Path(os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data"))
         self._eq_hist: list[dict] = []
         self._eq_last_ts: float = 0.0
+        self._strat_hist: list[dict] = []
         self._load_equity_hist()
         # the orchestrator's macro provider reads our cache
         self.orch.macro_provider = lambda: self.macro
@@ -402,6 +403,14 @@ class LiveLoop:
                         self._eq_last_ts = float(self._eq_hist[-1].get("t", 0))
         except Exception:
             log.exception("equity history load failed (non-fatal)")
+        try:
+            sp = self.data_dir / "strat_history.json"
+            if sp.exists():
+                d2 = json.loads(sp.read_text())
+                if isinstance(d2, list):
+                    self._strat_hist = d2[-480:]
+        except Exception:
+            log.exception("strat history load failed (non-fatal)")
 
     def _save_equity_hist(self) -> None:
         try:
@@ -430,11 +439,28 @@ class LiveLoop:
                 self._eq_hist = self._eq_hist[-480:]
             self._eq_last_ts = ts
             self._save_equity_hist()
+            # per-strategy cumulative realized P/L snapshot (small-multiples)
+            by: dict = {}
+            for tr in self.engine.closed:
+                k = tr.position.meta.get("strategy", "reaction")
+                by[k] = round(by.get(k, 0.0) + tr.pnl_usd, 2)
+            self._strat_hist.append({"t": int(ts), "by": by})
+            if len(self._strat_hist) > 480:
+                self._strat_hist = self._strat_hist[-480:]
+            try:
+                tmp = (self.data_dir / "strat_history.json").with_suffix(".tmp")
+                tmp.write_text(json.dumps(self._strat_hist))
+                tmp.replace(self.data_dir / "strat_history.json")
+            except Exception:
+                log.exception("strat history save failed (non-fatal)")
         except Exception:
             log.exception("equity history record failed (non-fatal)")
 
     def equity_series(self) -> list[dict]:
         return list(self._eq_hist)
+
+    def strat_series(self) -> list[dict]:
+        return list(self._strat_hist)
 
     def status(self) -> dict:
         return {

@@ -678,3 +678,17 @@ h2.section::after { content: ""; flex: 1; height: 1px;
 /* decluttered activity feed: skip reasons as compact chips */
 .skip-reason { display: inline-block; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-secondary);
   background: rgba(255,255,255,0.04); border: 1px solid var(--border-soft); border-radius: 4px; padding: 1px 6px; margin: 2px 4px 0 0; }
+
+/* cost-to-breakeven bar segments + legend */
+.bar.costfee { background: linear-gradient(90deg, #3aa0ff, #2b7fd6); border-radius: 5px 0 0 5px; }
+.bar.costgas { background: linear-gradient(90deg, #f5b93f, #d8932a); border-radius: 0 5px 5px 0; }
+.bookbar-key i.k.costfee { background: #3aa0ff; }
+.bookbar-key i.k.costgas { background: #f5b93f; }
+
+/* per-strategy small multiples */
+.multiples { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.mult { background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: var(--radius-md); padding: 10px 12px; }
+.mult-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.mult-name { font-family: var(--font-display); font-weight: 600; font-size: 12px; color: var(--text-primary); text-transform: capitalize; }
+.mult-val { font-family: var(--font-mono); font-size: 12px; }
+.mult-val.pos { color: var(--profit); } .mult-val.neg { color: var(--loss); }
