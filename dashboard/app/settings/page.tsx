@@ -30,7 +30,7 @@ type Attr = { by_strategy: Record<string, AttrRow>; by_book?: Record<string, Att
 type Fees = { min_edge_gate?: boolean;
   realized?: { gross_usd: number; fees_usd: number; net_usd: number; fee_drag_pct_of_gross: number | null };
   breakeven_move_pct_incl_gas?: { spot: number; perp: number };
-  model?: { swap_fee_pct_per_swap?: number; perp_fee_pct_per_side?: number; gas_usd_per_action?: number } };
+  model?: { swap_fee_pct_per_swap?: number; perp_fee_pct_per_side?: number; gas_usd_per_action?: number; breakeven_move_pct?: { spot: number; perp: number } } };
 
 const MODE_BLURB: Record<string, string> = {
   conservative: "6 slots · largest entries · 10× perps · widest safety margin",
