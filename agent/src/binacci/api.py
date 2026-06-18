@@ -143,7 +143,7 @@ def build_app():
         yield
         task.cancel()
 
-    app = FastAPI(title="Binacci Agent", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="Binacci Agent", version="0.2.1", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"],
     )
