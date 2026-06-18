@@ -409,6 +409,12 @@ class StrategyConfig(BaseSettings):
     #: Max share of the slot budget a single book (spot OR perps) may hold, so
     #: neither starves the other — guarantees perps stays live alongside spot.
     book_share: float = 0.7
+    #: Book master switches. Disabling a book stops it taking NEW positions
+    #: (existing ones are still managed/closed). The operator can run spot-only,
+    #: perps-only, or both from the dashboard Controls; the choice persists.
+    #: Override at boot: BINACCI_SPOT_ENABLED / BINACCI_PERPS_ENABLED.
+    spot_enabled: bool = True
+    perps_enabled: bool = True
     #: Perps leverage — P/L on perp positions scales by this. Spot is 1x.
     #: SET BY THE RISK MODE via :meth:`apply_risk_mode` (conservative 10x /
     #: balanced 25x / aggressive 50x). This 2.0 is only the bare-constructor
@@ -547,6 +553,12 @@ class StrategyConfig(BaseSettings):
         'spot' (long-only). Both books run simultaneously. Deterministic —
         the single source of truth for a position's book."""
         return "perp" if strategy in self.perp_strategies else "spot"
+
+    def book_enabled(self, market: str) -> bool:
+        """Whether a book ('spot' or 'perp') may take NEW positions. A disabled
+        book is dormant for entries but its open positions are still managed and
+        can always be flattened."""
+        return self.perps_enabled if market == "perp" else self.spot_enabled
 
     def book_cap(self) -> int:
         """Max open positions a single book may hold (reserves room for the

@@ -121,9 +121,13 @@ class ExecutionEngine:
             return False
         if self.slots_free() <= 0:
             return False
+        # book master switch: a disabled book takes no new positions (its open
+        # positions are still managed/closed, so it can always be flattened).
+        market = self.cfg.market_for(strategy)
+        if not self.cfg.book_enabled(market):
+            return False
         # per-book capacity: neither spot nor perps may hog the whole budget,
         # so both books stay live at the same time.
-        market = self.cfg.market_for(strategy)
         cap = self.cfg.book_cap()
         in_book = sum(1 for p in self.positions
                       if p.state is not PositionState.CLOSED
@@ -393,6 +397,28 @@ class ExecutionEngine:
         for p in openpos:
             px = prices.get(p.symbol, p.avg_entry)
             out.append(self._close(p, px, ts, reason="kill_switch"))
+        return out
+
+    def flatten(self, prices: dict[str, float], ts: datetime,
+                market: Optional[str] = None, symbol: Optional[str] = None,
+                reason: str = "operator_flatten") -> list[ClosedTrade]:
+        """Operator close: force-close open positions, optionally scoped to one
+        book ('spot'|'perp') or one symbol. Worst-first (like the kill switch)
+        so the biggest losers flatten first if the venue closes sequentially.
+        Returns the closed trades; the caller mirrors them on-chain via the
+        venue close hook."""
+        openpos = [p for p in self.positions
+                   if p.state in (PositionState.OPEN, PositionState.SL_IN_PROFIT)]
+        if market is not None:
+            openpos = [p for p in openpos
+                       if self.cfg.market_for(p.meta.get("strategy", "reaction")) == market]
+        if symbol is not None:
+            openpos = [p for p in openpos if p.symbol == symbol]
+        openpos.sort(key=lambda p: p.unrealized_pnl_usd(prices.get(p.symbol, p.avg_entry)))
+        out: list[ClosedTrade] = []
+        for p in openpos:
+            px = prices.get(p.symbol, p.avg_entry)
+            out.append(self._close(p, px, ts, reason=reason))
         return out
 
     # ---------------- reporting ----------------

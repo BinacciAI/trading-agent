@@ -100,6 +100,18 @@ def _default_source() -> str:
     return os.environ.get("BINACCI_BACKTEST_SOURCE", "synthetic")
 
 
+def _trade_mode(scfg) -> str:
+    """Which books are live, for the dashboard badge: spot+perps | perps-only |
+    spot-only | none."""
+    if scfg.spot_enabled and scfg.perps_enabled:
+        return "spot+perps"
+    if scfg.perps_enabled:
+        return "perps-only"
+    if scfg.spot_enabled:
+        return "spot-only"
+    return "none"
+
+
 def _book_split(ctx) -> dict:
     """Live spot vs perps breakdown — Binacci runs both books at once."""
     mkt = ctx.scfg.market_for
@@ -147,7 +159,9 @@ def build_app():
         snap["loop"] = ctx.loop.status()
         snap["venue"] = ctx.rcfg.venue
         snap["allow_shorts"] = ctx.scfg.allow_shorts
-        snap["trade_mode"] = "spot+perps"
+        snap["trade_mode"] = _trade_mode(ctx.scfg)
+        snap["spot_enabled"] = ctx.scfg.spot_enabled
+        snap["perps_enabled"] = ctx.scfg.perps_enabled
         snap["books"] = _book_split(ctx)
         snap["regime"] = ctx.orchestrator.last_regime
         snap["regime_weighting"] = ctx.scfg.regime_weighting
@@ -239,7 +253,9 @@ def build_app():
             "warmup_backfill": ctx.rcfg.warmup_backfill,
             "quote": ctx.scfg.quote,
             "live_timeframes": [tf.value for tf in ctx.loop.live_tfs],
-            "trade_mode": "spot+perps",
+            "trade_mode": _trade_mode(ctx.scfg),
+            "spot_enabled": ctx.scfg.spot_enabled,
+            "perps_enabled": ctx.scfg.perps_enabled,
             "allow_shorts": ctx.scfg.allow_shorts,
             "perps_leverage": ctx.scfg.perps_leverage,
             "perps_target_mult": ctx.scfg.perps_target_mult,
@@ -351,6 +367,54 @@ def build_app():
             "min_signal_strength": c.min_signal_strength, "regime_weighting": c.regime_weighting,
             "trailing": {"trigger": c.trailing.trigger_pct, "initial": c.trailing.initial_sl_pct,
                          "step": c.trailing.step_pct}}}
+
+    @app.post("/books")
+    def set_books(spot: Optional[bool] = None, perps: Optional[bool] = None,
+                  flatten_disabled: bool = True):
+        """Activate/deactivate the Spot and/or Perps book (dashboard Controls).
+        A disabled book takes no NEW positions; by default its open positions
+        are flattened immediately (``flatten_disabled=false`` leaves them to be
+        managed out). Persisted, so the choice survives a redeploy."""
+        from datetime import datetime, timezone
+
+        c = ctx.scfg
+        applied: dict = {}
+        if spot is not None:
+            c.spot_enabled = bool(spot); applied["spot_enabled"] = c.spot_enabled
+        if perps is not None:
+            c.perps_enabled = bool(perps); applied["perps_enabled"] = c.perps_enabled
+        closed: list = []
+        if flatten_disabled and applied:
+            now = datetime.now(timezone.utc)
+            for mkt, enabled in (("spot", c.spot_enabled), ("perp", c.perps_enabled)):
+                if not enabled:
+                    closed += ctx.orchestrator.flatten(ctx.prices, now, market=mkt,
+                                                        reason="book_disabled")
+        from .persistence import save_operator_settings
+        save_operator_settings(getattr(ctx, "_data_dir", "/tmp/binacci-data"),
+                               {"spot_enabled": c.spot_enabled, "perps_enabled": c.perps_enabled})
+        return {"ok": True, "applied": applied, "trade_mode": _trade_mode(c),
+                "spot_enabled": c.spot_enabled, "perps_enabled": c.perps_enabled,
+                "closed": len(closed),
+                "realized_pnl_usd": round(sum(t.pnl_usd for t in closed), 2)}
+
+    @app.post("/positions/close")
+    def close_positions(market: Optional[str] = None, symbol: Optional[str] = None):
+        """Operator flatten: force-close open positions now — all of them, or
+        scoped to one book (``market=spot|perp``) or one ``symbol``. Closes
+        mirror on-chain through the venue. Use to clear stuck positions."""
+        from datetime import datetime, timezone
+
+        mkt = market.lower() if market else None
+        if mkt not in (None, "spot", "perp"):
+            return {"ok": False, "error": "market must be 'spot' or 'perp'"}
+        closed = ctx.orchestrator.flatten(
+            ctx.prices, datetime.now(timezone.utc),
+            market=mkt, symbol=(symbol.upper() if symbol else None),
+            reason="operator_close")
+        return {"ok": True, "closed": len(closed),
+                "realized_pnl_usd": round(sum(t.pnl_usd for t in closed), 2),
+                "open_remaining": len(ctx.engine.open_positions())}
 
     @app.post("/halt")
     def halt(reason: str = "operator stop"):

@@ -102,6 +102,46 @@ def test_take_profit(engine):
     assert trade is not None and trade.reason == "take_profit"
 
 
+def test_disabled_book_blocks_new_opens(engine):
+    cfg = engine.cfg
+    # reaction is a spot strategy. Disable the spot book -> no new spot opens,
+    # but the perps book is unaffected.
+    cfg.spot_enabled = False
+    assert not engine.can_open("BNB", Timeframe.M15, "reaction")
+    assert engine.open_from_signal(_signal(), 100.0, _ts()) is None
+    assert engine.can_open("BNB", Timeframe.M15, "mean_reversion")  # perp book
+    cfg.spot_enabled = True
+    assert engine.open_from_signal(_signal(), 100.0, _ts()) is not None
+
+
+def test_flatten_closes_open_positions(engine):
+    cfg = engine.cfg
+    cfg.book_share = 1.0
+    for i in range(3):
+        engine.open_from_signal(_signal(symbol=f"F{i}"), 100.0, _ts())
+    assert len(engine.open_positions()) == 3
+    prices = {f"F{i}": 100.5 for i in range(3)}
+    closed = engine.flatten(prices, _ts(), reason="operator_close")
+    assert len(closed) == 3
+    assert all(t.reason == "operator_close" for t in closed)
+    assert engine.open_positions() == []
+
+
+def test_flatten_scoped_to_book(engine):
+    cfg = engine.cfg
+    cfg.book_share = 1.0
+    spot = engine.open_from_signal(_signal(symbol="SP"), 100.0, _ts())  # reaction=spot
+    perp_sig = _signal(symbol="PP")
+    perp_sig.strategy = "mean_reversion"  # perp book
+    perp = engine.open_from_signal(perp_sig, 100.0, _ts())
+    assert spot is not None and perp is not None
+    closed = engine.flatten({"SP": 100.0, "PP": 100.0}, _ts(), market="spot")
+    assert len(closed) == 1 and closed[0].position.symbol == "SP"
+    # the perp position is untouched
+    remaining = engine.open_positions()
+    assert len(remaining) == 1 and remaining[0].symbol == "PP"
+
+
 def test_kill_switch(engine):
     # open 5 positions, crash all of them far enough that aggregate
     # floating loss >= 30% of deposit

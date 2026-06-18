@@ -202,6 +202,10 @@ def apply_operator_settings(cfg, data_dir) -> dict:
             cfg.min_signal_strength = max(0.0, min(1.0, float(s["min_signal_strength"])))
         if "regime_weighting" in s:
             cfg.regime_weighting = bool(s["regime_weighting"])
+        if "spot_enabled" in s:
+            cfg.spot_enabled = bool(s["spot_enabled"])
+        if "perps_enabled" in s:
+            cfg.perps_enabled = bool(s["perps_enabled"])
         tr = s.get("trailing") or {}
         if "trigger" in tr:
             cfg.trailing.trigger_pct = max(0.0, float(tr["trigger"]))

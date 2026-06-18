@@ -19,6 +19,7 @@ docs/         SETUP.md · ARCHITECTURE.md · HACKATHON.md · SKILLS_ROADMAP.md
 - **Strategy portfolio (5 concurrent strategies).** Reaction (the patient 5-gate core) + Momentum Breakout + Mean Reversion + Trend Follow + Volatility Squeeze — orthogonal opinions, all feeding one risk engine. Positions are unique per `(market, timeframe, strategy)`, so a quiet day for one is a busy day for another.
 - **50+ markets on BNB.** A BSC-ecosystem-weighted universe (BSC-native blue chips + the deepest Binance-Peg majors), analysed across six live timeframes.
 - **Risk modes.** Conservative / Balanced / Aggressive scale the number of concurrent positions and per-entry size *together* (15 / 30 / 50 slots), so a wider book stays just as conservative — same 30% kill switch, same 30% reserve. Switchable live.
+- **Book switches.** Activate the **Spot** and/or **Perps** book independently from the dashboard **Settings → Live Tuning** controls (or `POST /books`). A deactivated book takes no new positions and is flattened immediately; the choice persists across redeploys. A one-click **Close all positions** (`POST /positions/close`) flattens the book at market.
 - **Track-2 skill family.** Per-strategy and portfolio backtestable specs, plus installable `SKILL.md` packages under `skills/`.
 - **Credit-aware data layer.** Real per-bar volume from CMC 24h-volume deltas, decoupled macro / Fear-&-Greed cadences, and a live credit-burn estimate.
 
