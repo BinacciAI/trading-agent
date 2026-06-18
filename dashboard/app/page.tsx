@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { EquityChart, Sparkline, BookBar, DrawdownArea } from "./charts";
+import { EquityChart, Sparkline, DrawdownArea } from "./charts";
 import { useAgent, fmt, isRealTx, isSimTx, dur } from "./useAgent";
 
 type Risk = { risk_mode: string; max_positions: number };
@@ -23,8 +23,8 @@ type Trade = { symbol: string; tf: string; side?: string; market?: string; strat
 type VenueSafety = { venue: string; trading_halted?: boolean; halt_reason?: string;
   preflight_ok?: boolean | null; preflight_detail?: string; reconcile_state?: string;
   reconcile_detail?: string; mev_protect?: boolean; confirm_receipts?: boolean };
-type Trace = { symbol: string; tf: string; ts: string; strategy?: string; entered: boolean;
-  gates: { step: string; passed: boolean; detail: string }[] };
+type Sig = { symbol: string; tf: string; side?: string; strategy?: string;
+  level_price: number; level_kind?: string; created: string; expires: string };
 type Strat = { active: string[]; open_positions_by_strategy: Record<string, number>;
   realized_pnl_by_strategy: Record<string, number> };
 type Cfg = { perps_leverage?: number; perps_target_mult?: number; perp_data_source?: string;
@@ -76,7 +76,7 @@ export default function Page() {
   const [venue] = useAgent<VenueSafety | null>("/venue", null);
   const [positions] = useAgent<Pos[]>("/positions", []);
   const [trades] = useAgent<Trade[]>("/trades", []);
-  const [traces] = useAgent<Trace[]>("/traces?limit=40", []);
+  const [signals] = useAgent<Sig[]>("/signals", []);
   const [strat] = useAgent<Strat | null>("/strategies", null);
   const [cfg] = useAgent<Cfg | null>("/config", null, 8000);
 
@@ -166,16 +166,6 @@ export default function Page() {
           <div className="card"><div className="lbl">Closed Trades</div><div className="val">{status?.closed_trades ?? 0}</div></div>
         </div>
 
-        {(status as any)?.books && (() => { const bk = (status as any).books; return (
-          <div style={{ marginTop: 12 }}>
-          <BookBar spot={bk.spot.open} perpLong={bk.perp.long} perpShort={bk.perp.short} />
-          <div className="statline" style={{ marginTop: 10 }}>
-            <span>SPOT <b className="pos">{bk.spot.open} long</b> · <b className={bk.spot.realized >= 0 ? "pos" : "neg"}>{bk.spot.realized >= 0 ? "+" : ""}{fmt(bk.spot.realized)}</b></span>
-            <span>PERPS <b>{bk.perp.open} open</b> · <b className="pos">{bk.perp.long}L</b> / <b className="neg">{bk.perp.short}S</b> · <b className={bk.perp.realized >= 0 ? "pos" : "neg"}>{bk.perp.realized >= 0 ? "+" : ""}{fmt(bk.perp.realized)}</b></span>
-          </div>
-          </div>
-        ); })()}
-
         {eqPts.length > 1 && (
           <div style={{ marginTop: 16 }}>
             <DrawdownArea series={eqPts} title="Drawdown from Peak" />
@@ -234,29 +224,6 @@ export default function Page() {
           </table>
         </div>
 
-        <h2 className="section">Recent Decisions</h2>
-        <div className="tbl-wrap">
-          <table>
-            <thead><tr><th className="num">Time</th><th>Market</th><th>Strategy</th><th>TF</th><th>Gate Audit</th><th>Result</th><th>Blocking Reason</th></tr></thead>
-            <tbody>
-              {traces.length === 0 && <tr><td colSpan={7} className="empty">Warming up — no evaluations yet.</td></tr>}
-              {[...traces].reverse().slice(0, 14).map((t, i) => (
-                <tr key={i}>
-                  <td className="num dim">{new Date(t.ts).toLocaleTimeString()}</td>
-                  <td className="mkt">{t.symbol}</td>
-                  <td><span className="badge cyan">{sLabel(t.strategy)}</span></td>
-                  <td className="num dim">{t.tf}</td>
-                  <td className="gates-cell">{t.gates.map((g, j) => (<span key={j} className={g.passed ? "gate ok" : "gate no"} title={g.detail}>{g.step.replace(/_/g, " ")}</span>))}</td>
-                  <td>{t.entered ? <span className="badge green">ENTERED</span> : <span className="badge gray">SKIPPED</span>}</td>
-                  <td className="num dim" style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {(() => { const b = t.gates.find((g) => !g.passed); return b ? `${b.step.replace(/_/g, " ")}${b.detail ? `: ${b.detail}` : ""}` : "all gates passed"; })()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
         <h2 className="section">Closed Trades</h2>
         <div className="tbl-wrap">
           <table>
@@ -290,32 +257,41 @@ export default function Page() {
           <h2 className="section">Agent Activity Feed</h2>
           <div className="feed">
             {(() => {
-              const recent = [...traces].reverse();
-              const entered = recent.filter((t) => t.entered).slice(0, 6);
-              const skips = recent.filter((t) => !t.entered);
-              const items = entered.map((t, i) => (
-                <div key={`e${i}`} className="feed-item entered">
-                  <div className="when">{new Date(t.ts).toLocaleTimeString()} — {t.symbol} {t.tf} · {sLabel(t.strategy)}</div>
-                  <div className="what"><b>Entered</b> — all gates confirmed, limit filled.</div>
+              type Ev = { t: number; when: string; what: React.ReactNode; color: string };
+              const evs: Ev[] = [];
+              const tstr = (s?: string | null) => (s ? new Date(s).toLocaleTimeString() : "");
+              // Signals — limit entries the agent has parked, waiting for a touch.
+              for (const s of signals) {
+                const t = Date.parse(s.created); if (isNaN(t)) continue;
+                const buy = s.side !== "short";
+                evs.push({ t, color: "var(--brand-cyan)",
+                  when: `${tstr(s.created)} · ${s.symbol} ${s.tf} · ${sLabel(s.strategy)}`,
+                  what: <><b>{buy ? "Buy" : "Sell"} signal</b> — limit parked @ {px(s.level_price)}{s.level_kind ? ` (${s.level_kind.replace(/_/g, " ")})` : ""}.</> });
+              }
+              // Buys — positions the agent opened.
+              for (const p of positions) {
+                const t = p.opened ? Date.parse(p.opened) : NaN; if (isNaN(t)) continue;
+                evs.push({ t, color: "var(--profit)",
+                  when: `${tstr(p.opened)} · ${p.symbol} ${p.tf} · ${sLabel(p.strategy)}`,
+                  what: <><b>Opened {(p.side ?? "long").toUpperCase()}</b> {p.market === "perp" ? `perp${p.leverage && p.leverage > 1 ? ` ${fmt(p.leverage)}×` : ""}` : "spot"} · ${fmt(p.notional_usd)} @ {px(p.avg_entry)}.</> });
+              }
+              // Sells — positions the agent closed, with realized P/L.
+              for (const tr of trades) {
+                const t = tr.closed ? Date.parse(tr.closed) : NaN; if (isNaN(t)) continue;
+                const win = tr.pnl_usd >= 0;
+                evs.push({ t, color: win ? "var(--profit)" : "var(--loss)",
+                  when: `${tstr(tr.closed)} · ${tr.symbol} ${tr.tf} · ${sLabel(tr.strategy)}`,
+                  what: <><b>Closed {(tr.side ?? "long").toUpperCase()}</b> · {tr.reason.replace(/_/g, " ")} · <b className={win ? "pos" : "neg"}>{win ? "+" : ""}{fmt(tr.pnl_usd)}</b></> });
+              }
+              evs.sort((a, b) => b.t - a.t);
+              const top = evs.slice(0, 18);
+              if (!top.length) return <div className="feed-item"><div className="what">Watching markets — no signals or fills yet…</div></div>;
+              return top.map((e, i) => (
+                <div key={i} className="feed-item" style={{ borderLeftColor: e.color }}>
+                  <div className="when">{e.when}</div>
+                  <div className="what">{e.what}</div>
                 </div>
               ));
-              if (skips.length) {
-                // top recent skip reasons, de-duplicated
-                const reasons: string[] = [];
-                for (const t of skips) {
-                  const lg = t.gates[t.gates.length - 1];
-                  const r = lg ? (lg.detail || lg.step.replace(/_/g, " ")) : "no setup";
-                  if (!reasons.includes(r)) reasons.push(r);
-                  if (reasons.length >= 3) break;
-                }
-                items.push(
-                  <div key="skips" className="feed-item blocked">
-                    <div className="when">{skips.length} evaluations · no qualifying setup</div>
-                    <div className="what">{reasons.map((r, i) => <span key={i} className="skip-reason">{r}</span>)}</div>
-                  </div>
-                );
-              }
-              return items.length ? items : <div className="feed-item"><div className="what">Watching markets…</div></div>;
             })()}
           </div>
         </div>

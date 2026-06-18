@@ -122,21 +122,6 @@ export default function Settings() {
     setBusy(false);
   };
 
-  const [autoRec, setAutoRec] = useState<{ recommended_mode: string; rationale: string } | null>(null);
-  const fetchAuto = async () => {
-    try { const j = await (await fetch("/agent/risk/auto")).json(); if (j.ok) setAutoRec(j); } catch {}
-  };
-  useEffect(() => { if (cfg?.deposit_usd != null) fetchAuto(); }, [cfg?.deposit_usd]);
-  const applyAuto = async () => {
-    setBusy(true); setMsg("");
-    try {
-      const j = await (await fetch("/agent/risk/auto", { method: "POST" })).json();
-      if (j.ok) { setMode(j.applied_mode); setMsg(`Matched to ${j.applied_mode} for your $${fmt(cfg?.deposit_usd ?? 0)} margin`); fetchAuto(); }
-      else setMsg(j.error || "match failed");
-    } catch { setMsg("agent offline — cannot match"); }
-    setBusy(false);
-  };
-
   return (
     <main className="main">
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
@@ -167,21 +152,6 @@ export default function Settings() {
       <p style={{ fontSize: 12, color: "var(--text-muted)", minHeight: 18 }}>
         {MODE_BLURB[mode] || ""} {msg && <span className="badge cyan" style={{ marginLeft: 8 }}>{msg}</span>}
       </p>
-
-      <div className="vault" style={{ marginTop: 6, marginBottom: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-          <div style={{ minWidth: 240, flex: 1 }}>
-            <div className="lbl">Match to my margin <span className="badge gray" style={{ marginLeft: 6 }}>AGENT</span></div>
-            <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "5px 0 0", lineHeight: 1.6 }}>
-              {autoRec ? autoRec.rationale : "Sizing the envelope to your deposit…"}
-            </p>
-          </div>
-          <button disabled={busy || !autoRec} className="btn btn-primary" onClick={applyAuto}
-            style={{ minWidth: 168, whiteSpace: "nowrap", textTransform: "capitalize" }}>
-            {autoRec ? `Match → ${autoRec.recommended_mode}` : "Match"}
-          </button>
-        </div>
-      </div>
 
       <h2 className="section">Live Tuning</h2>
       <div className="vault" style={{ marginBottom: 20, maxWidth: 820 }}>

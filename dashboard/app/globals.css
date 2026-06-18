@@ -610,9 +610,12 @@ h2.section::after { content: ""; flex: 1; height: 1px;
   .hero-eq { font-size: 50px; }
   .cards { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
 }
-/* Beyond ~2.6k, center the content column so lines don't sprawl edge-to-edge. */
-@media (min-width: 2600px) {
-  .main { padding-left: calc((100vw - 2480px) / 2); padding-right: calc((100vw - 2480px) / 2); }
+/* Cap the content column so it never sprawls edge-to-edge on big monitors —
+   on a 32" screen the cards/tables stay a comfortable reading width, centered,
+   instead of stretching the full viewport. The rail (Terminal) is a sibling of
+   .main, so it keeps its place on the right. */
+@media (min-width: 1500px) {
+  .main > * { max-width: 1380px; margin-left: auto; margin-right: auto; }
 }
 
 /* Tablet: stack the hero before it gets cramped. */

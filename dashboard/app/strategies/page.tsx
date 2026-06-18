@@ -1,7 +1,7 @@
 "use client";
 
 import { useAgent, fmt } from "../useAgent";
-import { AttributionBars, StratMultiples } from "../charts";
+import { StratMultiples } from "../charts";
 
 type Cat = {
   strategy: string; skill: string; title: string; philosophy: string;
@@ -34,13 +34,6 @@ export default function StrategiesPage() {
         independent reasons to be in a market, with the slot cap and kill switch bounding total
         exposure. Positions are unique per (market, timeframe, strategy), so the strategies never collide.
       </p>
-
-      <h2 className="section">Realized P/L by Strategy</h2>
-      <div className="chartbox" style={{ marginBottom: 22 }}>
-        <AttributionBars
-          rows={Object.entries(data?.realized_pnl_by_strategy ?? {}).map(([label, net]) => ({ label, net }))}
-          empty="no realized P/L yet — strategies are warming up" />
-      </div>
 
       <div className="strat-grid">
         {cat.length === 0 && <div className="strat-card"><div className="sc-title">Loading…</div></div>}
