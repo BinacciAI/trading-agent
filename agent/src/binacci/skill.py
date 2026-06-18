@@ -83,6 +83,20 @@ STRATEGY_META: dict[str, dict] = {
         "gates": ["swing_low_swept", "reclaim", "level_touch"],
         "requires_macro": False,
     },
+    "basis_carry": {
+        "title": "Spot-Perp Basis Carry (delta-neutral)",
+        "philosophy": "A perp premium is a paid carry; short the rich perp, long the cheap spot.",
+        "entry_logic": "On a sustained perp premium vs spot: short perp + equal long-spot hedge (delta-neutral). Earns basis convergence + funding. Uses both books.",
+        "gates": ["premium_extreme", "level_touch"],
+        "requires_macro": False,
+    },
+    "funding_carry": {
+        "title": "Perps Funding / Basis Carry",
+        "philosophy": "Crowded leverage pays for the privilege; fade the side that is paying.",
+        "entry_logic": "Derive funding from the on-chain perp mark vs CMC spot. Sustained premium (crowded longs) -> fade short; discount (crowded shorts) -> fade long. Perps-only, both ways.",
+        "gates": ["funding_extreme", "level_touch"],
+        "requires_macro": False,
+    },
 }
 
 

@@ -166,10 +166,37 @@ class RiskMode(str, Enum):
 #: by the same factor, so the kill switch / liquidation sit proportionally
 #: closer. Tiers: conservative 10x, balanced 25x, aggressive 50x.
 RISK_PRESETS: dict[RiskMode, dict] = {
-    RiskMode.CONSERVATIVE: {"max_positions": 15, "entry_pct_of_working": 0.0050, "perps_leverage": 10.0},
-    RiskMode.BALANCED:     {"max_positions": 30, "entry_pct_of_working": 0.0035, "perps_leverage": 25.0},
-    RiskMode.AGGRESSIVE:   {"max_positions": 50, "entry_pct_of_working": 0.0025, "perps_leverage": 50.0},
+    # Fee-viable sizing for a small ($1k+) deposit: fewer/bigger positions so
+    # perp notional (margin x leverage) dwarfs fixed BSC gas. Each mode is a
+    # genuinely different envelope — slots, entry size, leverage AND averaging
+    # all move together, and aggregate deployed capital stays under working.
+    RiskMode.CONSERVATIVE: {"max_positions": 6,  "entry_pct_of_working": 0.035, "perps_leverage": 10.0, "averaging": (1.5, 1.0)},
+    RiskMode.BALANCED:     {"max_positions": 10, "entry_pct_of_working": 0.025, "perps_leverage": 25.0, "averaging": (2.0, 1.5)},
+    RiskMode.AGGRESSIVE:   {"max_positions": 14, "entry_pct_of_working": 0.020, "perps_leverage": 50.0, "averaging": (2.0, 1.5)},
 }
+
+
+#: Regime-weighted allocation. The macro regime (from CMC global metrics + F&G)
+#: tilts capital toward the strategies that fit it by scaling per-entry size in
+#: [0,1] (1.0 = full, <1 = trimmed). Weights never exceed 1.0, so the risk
+#: envelope is only ever reduced — never amplified. risk_off naturally cuts the
+#: long-only spot strategies while keeping the both-ways perp fades working.
+REGIME_WEIGHTS: dict[str, dict[str, float]] = {
+    "risk_on":  {"reaction": 1.0, "momentum_breakout": 1.0, "trend_follow": 1.0,
+                 "mean_reversion": 0.5, "volatility_squeeze": 0.9,
+                 "vwap_reversion": 0.5, "liquidity_sweep": 0.7, "funding_carry": 0.8, "basis_carry": 1.0},
+    "chop":     {"reaction": 0.9, "momentum_breakout": 0.5, "trend_follow": 0.5,
+                 "mean_reversion": 1.0, "volatility_squeeze": 0.9,
+                 "vwap_reversion": 1.0, "liquidity_sweep": 1.0, "funding_carry": 1.0, "basis_carry": 1.0},
+    "risk_off": {"reaction": 0.6, "momentum_breakout": 0.3, "trend_follow": 0.3,
+                 "mean_reversion": 0.8, "volatility_squeeze": 0.7,
+                 "vwap_reversion": 0.8, "liquidity_sweep": 0.9, "funding_carry": 1.0, "basis_carry": 1.0},
+}
+
+
+class FundingConfig(BaseModel):
+    """Funding/basis carry: minimum |perp premium vs spot| (percent) to fade."""
+    min_abs_funding_pct: float = 0.05
 
 
 class FilterConfig(BaseModel):
@@ -244,6 +271,8 @@ class StrategyToggles(BaseModel):
     volatility_squeeze: bool = True  # Bollinger squeeze release
     vwap_reversion: bool = True      # fade stretch from rolling VWAP
     liquidity_sweep: bool = True     # stop-run wick + reclaim
+    funding_carry: bool = True       # perps funding/basis carry (fade the crowd)
+    basis_carry: bool = True         # delta-neutral spot-perp basis carry
 
 
 class BreakoutConfig(BaseModel):
@@ -358,6 +387,7 @@ class StrategyConfig(BaseSettings):
     #: Active strategies + their parameters (the multi-strategy portfolio).
     strategies: StrategyToggles = Field(default_factory=StrategyToggles)
     breakout: BreakoutConfig = Field(default_factory=BreakoutConfig)
+    funding: FundingConfig = Field(default_factory=FundingConfig)
     mean_reversion: MeanReversionConfig = Field(default_factory=MeanReversionConfig)
     trend: TrendConfig = Field(default_factory=TrendConfig)
     squeeze: SqueezeConfig = Field(default_factory=SqueezeConfig)
@@ -374,10 +404,17 @@ class StrategyConfig(BaseSettings):
     #: spot position AND a perp position concurrently (different strategies).
     perp_strategies: set[str] = Field(default_factory=lambda: {
         "mean_reversion", "volatility_squeeze", "vwap_reversion", "liquidity_sweep",
+        "funding_carry", "basis_carry",
     })
     #: Max share of the slot budget a single book (spot OR perps) may hold, so
     #: neither starves the other — guarantees perps stays live alongside spot.
     book_share: float = 0.7
+    #: Book master switches. Disabling a book stops it taking NEW positions
+    #: (existing ones are still managed/closed). The operator can run spot-only,
+    #: perps-only, or both from the dashboard Controls; the choice persists.
+    #: Override at boot: BINACCI_SPOT_ENABLED / BINACCI_PERPS_ENABLED.
+    spot_enabled: bool = True
+    perps_enabled: bool = True
     #: Perps leverage — P/L on perp positions scales by this. Spot is 1x.
     #: SET BY THE RISK MODE via :meth:`apply_risk_mode` (conservative 10x /
     #: balanced 25x / aggressive 50x). This 2.0 is only the bare-constructor
@@ -391,6 +428,21 @@ class StrategyConfig(BaseSettings):
     #: 0.40%) instead of insta-closing. 1.0 = legacy behaviour. Applied on top
     #: of any per-strategy target_mult. Override: BINACCI_PERPS_TARGET_MULT.
     perps_target_mult: float = 2.0
+    #: Quality gate: minimum proposal strength (0..1) for a signal to park/fill.
+    #: Higher = fewer, higher-conviction trades and a smoother equity curve.
+    #: 0 keeps every setup. Override: BINACCI_MIN_STRENGTH.
+    min_signal_strength: float = 0.0
+    #: Regime-weighted allocation: tilt per-entry size by the macro regime.
+    #: Disable with BINACCI_REGIME_WEIGHTING=false.
+    regime_weighting: bool = True
+    #: Fee-aware entry gate: refuse setups whose target can't clear the
+    #: estimated round-trip on-chain fees + gas. Auto-on for live venues; off
+    #: in paper (so the demo stays active). Override BINACCI_MIN_EDGE_GATE.
+    min_edge_gate: bool = False
+    #: Go-live ramp: hard cap on per-order EXPOSURE (notional = margin x leverage)
+    #: in USD. The first real-money trades stay dust-sized regardless of leverage
+    #: until the operator raises it. 0 = no cap. Set BINACCI_GOLIVE_MAX_USD.
+    golive_max_usd: float = 0.0
 
     #: Named risk preset. Applied by :meth:`load` (and the runtime switcher),
     #: NOT by the bare constructor — so unit tests keep the raw defaults.
@@ -430,6 +482,28 @@ class StrategyConfig(BaseSettings):
             cfg.perps_target_mult = max(1.0, float(os.environ.get("BINACCI_PERPS_TARGET_MULT", cfg.perps_target_mult)))
         except (TypeError, ValueError):
             pass
+        try:
+            cfg.min_signal_strength = max(0.0, min(1.0, float(os.environ.get("BINACCI_MIN_STRENGTH", cfg.min_signal_strength))))
+        except (TypeError, ValueError):
+            pass
+        # Tighten exits live without a redeploy (locks profit sooner -> less
+        # give-back, smoother curve). Defaults unchanged unless these are set.
+        for _env, _attr in (("BINACCI_TRAIL_TRIGGER", "trigger_pct"),
+                            ("BINACCI_TRAIL_INITIAL", "initial_sl_pct"),
+                            ("BINACCI_TRAIL_STEP", "step_pct")):
+            _v = os.environ.get(_env)
+            if _v is not None:
+                try:
+                    setattr(cfg.trailing, _attr, max(0.0, float(_v)))
+                except (TypeError, ValueError):
+                    pass
+        _rw = os.environ.get("BINACCI_REGIME_WEIGHTING")
+        if _rw is not None:
+            cfg.regime_weighting = _rw.strip().lower() in ("1", "true", "yes", "on")
+        _meg = os.environ.get("BINACCI_MIN_EDGE_GATE")
+        if _meg is not None:
+            cfg.min_edge_gate = _meg.strip().lower() in ("1", "true", "yes", "on")
+        cfg.apply_size_env()
         cfg.export_runtime_env()
         return cfg
 
@@ -454,6 +528,9 @@ class StrategyConfig(BaseSettings):
             self.risk.max_positions = preset["max_positions"]
             self.margin.entry_pct_of_working = preset["entry_pct_of_working"]
             self.perps_leverage = preset["perps_leverage"]
+            avg = preset.get("averaging")
+            if avg:
+                self.margin.averaging_multipliers = tuple(avg)
         return self
 
     def risk_summary(self) -> dict:
@@ -477,10 +554,60 @@ class StrategyConfig(BaseSettings):
         the single source of truth for a position's book."""
         return "perp" if strategy in self.perp_strategies else "spot"
 
+    def book_enabled(self, market: str) -> bool:
+        """Whether a book ('spot' or 'perp') may take NEW positions. A disabled
+        book is dormant for entries but its open positions are still managed and
+        can always be flattened."""
+        return self.perps_enabled if market == "perp" else self.spot_enabled
+
     def book_cap(self) -> int:
         """Max open positions a single book may hold (reserves room for the
         other book so spot and perps are always live together)."""
         return max(1, int(self.risk.max_positions * self.book_share + 0.999))
+
+    def apply_size_env(self) -> "StrategyConfig":
+        """Structural overrides for fee-efficient sizing on small deposits:
+        bigger/fewer positions so notional clears fixed gas.
+
+        The structural pins (entry size / slots / averaging) are now governed by
+        the risk-mode PRESET and the margin matcher, so they are only honoured
+        here when the operator explicitly opts in with BINACCI_SIZE_OVERRIDE=1.
+        Without that flag these legacy env vars are ignored and the active mode
+        wins — so switching modes (or auto-matching to margin) actually changes
+        slots and entry size. The go-live exposure cap is always applied."""
+        import os
+        # Go-live exposure cap: always honoured, independent of the override.
+        try:
+            self.golive_max_usd = max(0.0, float(os.environ.get("BINACCI_GOLIVE_MAX_USD", self.golive_max_usd)))
+        except (TypeError, ValueError):
+            pass
+        if os.environ.get("BINACCI_SIZE_OVERRIDE", "").strip().lower() not in ("1", "true", "yes", "on"):
+            return self
+        try:
+            self.margin.entry_pct_of_working = max(1e-5, float(
+                os.environ.get("BINACCI_ENTRY_PCT_WORKING", self.margin.entry_pct_of_working)))
+        except (TypeError, ValueError):
+            pass
+        try:
+            self.risk.max_positions = max(1, int(float(
+                os.environ.get("BINACCI_MAX_POSITIONS", self.risk.max_positions))))
+        except (TypeError, ValueError):
+            pass
+        _avg = os.environ.get("BINACCI_AVERAGING")
+        if _avg:
+            try:
+                self.margin.averaging_multipliers = tuple(
+                    float(x) for x in _avg.split(",") if x.strip())
+            except (TypeError, ValueError):
+                pass
+        return self
+
+    def regime_size_mult(self, regime: str, strategy: str) -> float:
+        """Per-entry size multiplier in [0,1] for a strategy in a regime.
+        1.0 when weighting is off or the regime/strategy is unmapped."""
+        if not self.regime_weighting:
+            return 1.0
+        return float(REGIME_WEIGHTS.get(regime, {}).get(strategy, 1.0))
 
     def target_for(self, tf: Timeframe) -> float:
         return self.targets_pct.get(tf, DEFAULT_TARGETS[tf])

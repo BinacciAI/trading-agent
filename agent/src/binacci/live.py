@@ -154,8 +154,18 @@ class LiveLoop:
         self.last_error = ""
         self._emitted: dict[tuple[str, str], datetime] = {}
         self.data_dir = Path(os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data"))
+        self._eq_hist: list[dict] = []
+        self._eq_last_ts: float = 0.0
+        self._strat_hist: list[dict] = []
+        self._load_equity_hist()
         # the orchestrator's macro provider reads our cache
         self.orch.macro_provider = lambda: self.macro
+        #: symbol -> funding %% (perp premium vs spot); populated live when perp
+        #: marks exist. Paper marks == spot -> empty -> funding strategy idle.
+        self.funding: dict[str, float] = {}
+        self.orch.funding_provider = lambda: self.funding
+        from .sentinel import Sentinel
+        self.sentinel = Sentinel()
         # venue execution: engine decides, venues mirror on-chain. Binacci
         # runs a SPOT book and a PERPS book at the same time; each position is
         # routed by its meta["market"] tag. In paper mode both are simulated.
@@ -377,6 +387,80 @@ class LiveLoop:
                 if collected_min >= need * tf.minutes
             ],
         }
+
+    # ---- equity history (server-side, shared across clients, persisted) ----
+    def _eq_path(self) -> Path:
+        return self.data_dir / "equity_history.json"
+
+    def _load_equity_hist(self) -> None:
+        try:
+            p = self._eq_path()
+            if p.exists():
+                data = json.loads(p.read_text())
+                if isinstance(data, list):
+                    self._eq_hist = data[-480:]
+                    if self._eq_hist:
+                        self._eq_last_ts = float(self._eq_hist[-1].get("t", 0))
+        except Exception:
+            log.exception("equity history load failed (non-fatal)")
+        try:
+            sp = self.data_dir / "strat_history.json"
+            if sp.exists():
+                d2 = json.loads(sp.read_text())
+                if isinstance(d2, list):
+                    self._strat_hist = d2[-480:]
+        except Exception:
+            log.exception("strat history load failed (non-fatal)")
+
+    def _save_equity_hist(self) -> None:
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            tmp = self._eq_path().with_suffix(".tmp")
+            tmp.write_text(json.dumps(self._eq_hist))
+            tmp.replace(self._eq_path())
+        except Exception:
+            log.exception("equity history save failed (non-fatal)")
+
+    def _record_equity(self, now) -> None:
+        """Sample equity ~once/minute so the dashboard charts a real, durable
+        curve instead of a per-tab buffer that resets on refresh."""
+        try:
+            ts = now.timestamp()
+            if ts - self._eq_last_ts < 55:
+                return
+            snap = self.engine.snapshot(self.prices)
+            self._eq_hist.append({
+                "t": int(ts),
+                "eq": round(float(snap.get("equity_usd", 0.0)), 2),
+                "r": round(float(snap.get("realized_pnl_usd", 0.0)), 2),
+                "u": round(float(snap.get("unrealized_pnl_usd", 0.0)), 2),
+            })
+            if len(self._eq_hist) > 480:
+                self._eq_hist = self._eq_hist[-480:]
+            self._eq_last_ts = ts
+            self._save_equity_hist()
+            # per-strategy cumulative realized P/L snapshot (small-multiples)
+            by: dict = {}
+            for tr in self.engine.closed:
+                k = tr.position.meta.get("strategy", "reaction")
+                by[k] = round(by.get(k, 0.0) + tr.pnl_usd, 2)
+            self._strat_hist.append({"t": int(ts), "by": by})
+            if len(self._strat_hist) > 480:
+                self._strat_hist = self._strat_hist[-480:]
+            try:
+                tmp = (self.data_dir / "strat_history.json").with_suffix(".tmp")
+                tmp.write_text(json.dumps(self._strat_hist))
+                tmp.replace(self.data_dir / "strat_history.json")
+            except Exception:
+                log.exception("strat history save failed (non-fatal)")
+        except Exception:
+            log.exception("equity history record failed (non-fatal)")
+
+    def equity_series(self) -> list[dict]:
+        return list(self._eq_hist)
+
+    def strat_series(self) -> list[dict]:
+        return list(self._strat_hist)
 
     def status(self) -> dict:
         return {
@@ -675,6 +759,14 @@ class LiveLoop:
                 completed[sym] = done
         self.last_poll = now
         self.polls += 1
+        self._record_equity(now)
+        try:
+            ev = self.sentinel.check(self.prices)
+            if ev["critical"] and not self.engine.trading_halted and not self.engine.kill_switch_fired:
+                self.engine.halt("sentinel: " + ev["reason"])
+                log.warning("SENTINEL HALT — %s", ev["reason"])
+        except Exception:
+            log.exception("sentinel check failed (non-fatal)")
 
         # 2) macro refresh on its own (credit-aware) cadence; F&G even rarer
         macro_due = (self.last_macro is None

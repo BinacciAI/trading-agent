@@ -31,7 +31,16 @@ class AgentContext:
             self.scfg.allow_shorts = shorts_env.strip().lower() in ("1", "true", "yes", "on")
         else:
             self.scfg.allow_shorts = self.rcfg.venue in ("paper", "perps")
+        # persisted operator choices (risk mode / leverage / knobs) win over
+        # env + defaults, so a redeploy never reverts the operator's settings.
+        if os.environ.get("BINACCI_MIN_EDGE_GATE") is None and self.rcfg.venue != "paper":
+            self.scfg.min_edge_gate = True  # real money: never trade fee-losing setups
+        self._data_dir = os.environ.get("BINACCI_DATA_DIR", "/tmp/binacci-data")
+        from .persistence import apply_operator_settings
+        apply_operator_settings(self.scfg, self._data_dir)
+        self.scfg.apply_size_env()  # fee-efficient sizing wins over preset/operator
         self.engine = ExecutionEngine(self.scfg, deposit_usd=self.rcfg.deposit_usd)
+        self.engine._simulate_fees = os.environ.get("BINACCI_SIMULATE_FEES", "true").strip().lower() not in ("0", "false", "no", "off")
         self.orchestrator = Orchestrator(self.scfg, self.engine)
         from .live import LiveLoop
 
@@ -91,6 +100,18 @@ def _default_source() -> str:
     return os.environ.get("BINACCI_BACKTEST_SOURCE", "synthetic")
 
 
+def _trade_mode(scfg) -> str:
+    """Which books are live, for the dashboard badge: spot+perps | perps-only |
+    spot-only | none."""
+    if scfg.spot_enabled and scfg.perps_enabled:
+        return "spot+perps"
+    if scfg.perps_enabled:
+        return "perps-only"
+    if scfg.spot_enabled:
+        return "spot-only"
+    return "none"
+
+
 def _book_split(ctx) -> dict:
     """Live spot vs perps breakdown — Binacci runs both books at once."""
     mkt = ctx.scfg.market_for
@@ -122,7 +143,7 @@ def build_app():
         yield
         task.cancel()
 
-    app = FastAPI(title="Binacci Agent", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="Binacci Agent", version="0.2.1", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"],
     )
@@ -138,10 +159,15 @@ def build_app():
         snap["loop"] = ctx.loop.status()
         snap["venue"] = ctx.rcfg.venue
         snap["allow_shorts"] = ctx.scfg.allow_shorts
-        snap["trade_mode"] = "spot+perps"
+        snap["trade_mode"] = _trade_mode(ctx.scfg)
+        snap["spot_enabled"] = ctx.scfg.spot_enabled
+        snap["perps_enabled"] = ctx.scfg.perps_enabled
         snap["books"] = _book_split(ctx)
+        snap["regime"] = ctx.orchestrator.last_regime
+        snap["regime_weighting"] = ctx.scfg.regime_weighting
         snap["prices"] = {k: round(v, 6) for k, v in ctx.prices.items()}
         snap["explorer_tx_base"] = _explorer_tx_base(ctx.rcfg)
+        snap["equity_series"] = ctx.loop.equity_series()
         return snap
 
     @app.get("/positions")
@@ -187,6 +213,8 @@ def build_app():
                 "notional_usd": round(notional, 2),
                 "leverage": pos.meta.get("leverage", 1),
                 "pnl_usd": round(t.pnl_usd, 2),
+                "gross_pnl_usd": round(t.gross_pnl_usd, 4),
+                "fees_usd": round(t.fees_usd, 4),
                 "pnl_pct": round((t.pnl_usd / notional * 100) if notional else 0.0, 3),
                 "reason": t.reason,
                 "opened": pos.opened_ts.isoformat() if pos.opened_ts else None,
@@ -225,10 +253,22 @@ def build_app():
             "warmup_backfill": ctx.rcfg.warmup_backfill,
             "quote": ctx.scfg.quote,
             "live_timeframes": [tf.value for tf in ctx.loop.live_tfs],
-            "trade_mode": "spot+perps",
+            "trade_mode": _trade_mode(ctx.scfg),
+            "spot_enabled": ctx.scfg.spot_enabled,
+            "perps_enabled": ctx.scfg.perps_enabled,
             "allow_shorts": ctx.scfg.allow_shorts,
             "perps_leverage": ctx.scfg.perps_leverage,
             "perps_target_mult": ctx.scfg.perps_target_mult,
+            "min_signal_strength": ctx.scfg.min_signal_strength,
+            "regime_weighting": ctx.scfg.regime_weighting,
+            "min_edge_gate": ctx.scfg.min_edge_gate,
+            "fees": __import__("binacci.fees", fromlist=["fee_model"]).fee_model().summary(
+                ctx.rcfg.deposit_usd, ctx.scfg.margin.entry_pct_of_deposit, ctx.scfg.perps_leverage),
+            "trailing": {"trigger": ctx.scfg.trailing.trigger_pct,
+                         "initial": ctx.scfg.trailing.initial_sl_pct,
+                         "step": ctx.scfg.trailing.step_pct},
+            "trading_halted": ctx.engine.trading_halted,
+            "halt_reason": ctx.engine.halt_reason,
             "perp_data_source": getattr(ctx.loop, "perp_data_source", "spot_quote"),
             "book_cap": ctx.scfg.book_cap(),
             "perp_strategies": sorted(ctx.scfg.perp_strategies),
@@ -254,10 +294,190 @@ def build_app():
             return {"ok": False, "error": f"unknown mode {mode!r}",
                     "modes": [m.value for m in RiskMode]}
         ctx.scfg.apply_risk_mode(rm)  # ctx.engine.cfg is the same object
+        ctx.scfg.apply_size_env()  # keep fee-efficient sizing across a mode switch
         ctx.scfg.export_runtime_env()  # propagate leverage to venue/brain/monitors
+        from .persistence import save_operator_settings
+        save_operator_settings(getattr(ctx, "_data_dir", "/tmp/binacci-data"),
+                               {"risk_mode": rm.value, "perps_leverage": ctx.scfg.perps_leverage})
         return {"ok": True, "mode": rm.value, "risk": ctx.scfg.risk_summary(),
                 "perps_leverage": ctx.scfg.perps_leverage,
                 "perps_target_mult": ctx.scfg.perps_target_mult}
+
+    @app.get("/risk/auto")
+    def risk_auto():
+        """Margin matcher: recommend the risk envelope that fits the live
+        deposit. Pure/read-only — returns the recommendation + per-mode fee
+        table without changing anything."""
+        from .riskmatch import match_risk
+        rec = match_risk(ctx.rcfg.deposit_usd)
+        rec["ok"] = True
+        rec["current_mode"] = ctx.scfg.risk_mode.value
+        return rec
+
+    @app.post("/risk/auto")
+    def risk_auto_apply():
+        """Apply the margin-matched recommendation as the live risk mode
+        (same persist/export path as a manual switch)."""
+        from .riskmatch import match_risk
+        from .config import RiskMode
+        rec = match_risk(ctx.rcfg.deposit_usd)
+        rm = RiskMode(rec["recommended_mode"])
+        ctx.scfg.apply_risk_mode(rm)
+        ctx.scfg.apply_size_env()
+        ctx.scfg.export_runtime_env()
+        from .persistence import save_operator_settings
+        save_operator_settings(getattr(ctx, "_data_dir", "/tmp/binacci-data"),
+                               {"risk_mode": rm.value, "perps_leverage": ctx.scfg.perps_leverage})
+        return {"ok": True, "applied_mode": rm.value, "rationale": rec["rationale"],
+                "risk": ctx.scfg.risk_summary(), "perps_leverage": ctx.scfg.perps_leverage}
+
+    @app.post("/control")
+    def control(perps_leverage: Optional[float] = None, min_strength: Optional[float] = None,
+                regime_weighting: Optional[bool] = None, perps_target_mult: Optional[float] = None,
+                trail_trigger: Optional[float] = None, trail_initial: Optional[float] = None,
+                trail_step: Optional[float] = None):
+        """Operator console: apply risk/edge knobs to the LIVE config (the
+        engine + orchestrator share this object, so changes take effect on the
+        next evaluation). Leverage is also exported to the venue/brain env."""
+        c = ctx.scfg
+        applied: dict = {}
+        if perps_leverage is not None:
+            c.perps_leverage = max(1.0, float(perps_leverage)); applied["perps_leverage"] = c.perps_leverage
+        if perps_target_mult is not None:
+            c.perps_target_mult = max(1.0, float(perps_target_mult)); applied["perps_target_mult"] = c.perps_target_mult
+        if min_strength is not None:
+            c.min_signal_strength = max(0.0, min(1.0, float(min_strength))); applied["min_signal_strength"] = c.min_signal_strength
+        if regime_weighting is not None:
+            c.regime_weighting = bool(regime_weighting); applied["regime_weighting"] = c.regime_weighting
+        if trail_trigger is not None:
+            c.trailing.trigger_pct = max(0.0, float(trail_trigger)); applied["trail_trigger"] = c.trailing.trigger_pct
+        if trail_initial is not None:
+            c.trailing.initial_sl_pct = max(0.0, float(trail_initial)); applied["trail_initial"] = c.trailing.initial_sl_pct
+        if trail_step is not None:
+            c.trailing.step_pct = max(0.01, float(trail_step)); applied["trail_step"] = c.trailing.step_pct
+        c.export_runtime_env()
+        from .persistence import save_operator_settings
+        save_operator_settings(getattr(ctx, "_data_dir", "/tmp/binacci-data"), {
+            "perps_leverage": c.perps_leverage, "perps_target_mult": c.perps_target_mult,
+            "min_signal_strength": c.min_signal_strength, "regime_weighting": c.regime_weighting,
+            "trailing": {"trigger": c.trailing.trigger_pct, "initial": c.trailing.initial_sl_pct,
+                         "step": c.trailing.step_pct}})
+        return {"ok": True, "applied": applied, "live": {
+            "perps_leverage": c.perps_leverage, "perps_target_mult": c.perps_target_mult,
+            "min_signal_strength": c.min_signal_strength, "regime_weighting": c.regime_weighting,
+            "trailing": {"trigger": c.trailing.trigger_pct, "initial": c.trailing.initial_sl_pct,
+                         "step": c.trailing.step_pct}}}
+
+    @app.post("/books")
+    def set_books(spot: Optional[bool] = None, perps: Optional[bool] = None,
+                  flatten_disabled: bool = True):
+        """Activate/deactivate the Spot and/or Perps book (dashboard Controls).
+        A disabled book takes no NEW positions; by default its open positions
+        are flattened immediately (``flatten_disabled=false`` leaves them to be
+        managed out). Persisted, so the choice survives a redeploy."""
+        from datetime import datetime, timezone
+
+        c = ctx.scfg
+        applied: dict = {}
+        if spot is not None:
+            c.spot_enabled = bool(spot); applied["spot_enabled"] = c.spot_enabled
+        if perps is not None:
+            c.perps_enabled = bool(perps); applied["perps_enabled"] = c.perps_enabled
+        closed: list = []
+        if flatten_disabled and applied:
+            now = datetime.now(timezone.utc)
+            for mkt, enabled in (("spot", c.spot_enabled), ("perp", c.perps_enabled)):
+                if not enabled:
+                    closed += ctx.orchestrator.flatten(ctx.prices, now, market=mkt,
+                                                        reason="book_disabled")
+        from .persistence import save_operator_settings
+        save_operator_settings(getattr(ctx, "_data_dir", "/tmp/binacci-data"),
+                               {"spot_enabled": c.spot_enabled, "perps_enabled": c.perps_enabled})
+        return {"ok": True, "applied": applied, "trade_mode": _trade_mode(c),
+                "spot_enabled": c.spot_enabled, "perps_enabled": c.perps_enabled,
+                "closed": len(closed),
+                "realized_pnl_usd": round(sum(t.pnl_usd for t in closed), 2)}
+
+    @app.post("/positions/close")
+    def close_positions(market: Optional[str] = None, symbol: Optional[str] = None):
+        """Operator flatten: force-close open positions now — all of them, or
+        scoped to one book (``market=spot|perp``) or one ``symbol``. Closes
+        mirror on-chain through the venue. Use to clear stuck positions."""
+        from datetime import datetime, timezone
+
+        mkt = market.lower() if market else None
+        if mkt not in (None, "spot", "perp"):
+            return {"ok": False, "error": "market must be 'spot' or 'perp'"}
+        closed = ctx.orchestrator.flatten(
+            ctx.prices, datetime.now(timezone.utc),
+            market=mkt, symbol=(symbol.upper() if symbol else None),
+            reason="operator_close")
+        return {"ok": True, "closed": len(closed),
+                "realized_pnl_usd": round(sum(t.pnl_usd for t in closed), 2),
+                "open_remaining": len(ctx.engine.open_positions())}
+
+    @app.post("/halt")
+    def halt(reason: str = "operator stop"):
+        """Operator stop: block NEW opens immediately. Existing positions keep
+        being managed/closed (the book can always be flattened). Clear with
+        POST /venue/resume."""
+        ctx.engine.halt(reason)
+        return {"trading_halted": ctx.engine.trading_halted, "halt_reason": ctx.engine.halt_reason}
+
+    @app.get("/attribution")
+    def attribution():
+        """P/L attribution by strategy, book, and macro regime — realized
+        (closed) + unrealized (open marks)."""
+        eng = ctx.engine; mkt = ctx.scfg.market_for; prices = ctx.prices
+        def row(): return {"trades": 0, "wins": 0, "realized": 0.0, "unrealized": 0.0, "open": 0}
+        by_strategy: dict = {}; by_book = {"spot": row(), "perp": row()}; by_regime: dict = {}
+        for t in eng.closed:
+            sname = t.position.meta.get("strategy", "reaction")
+            rg = t.position.meta.get("regime", "unknown")
+            for d in (by_strategy.setdefault(sname, row()), by_book[mkt(sname)], by_regime.setdefault(rg, row())):
+                d["trades"] += 1; d["wins"] += 1 if t.pnl_usd > 0 else 0; d["realized"] += t.pnl_usd
+        for p in eng.open_positions():
+            sname = p.meta.get("strategy", "reaction")
+            rg = p.meta.get("regime", "unknown")
+            u = p.unrealized_pnl_usd(prices.get(p.symbol, p.avg_entry))
+            for d in (by_strategy.setdefault(sname, row()), by_book[mkt(sname)], by_regime.setdefault(rg, row())):
+                d["unrealized"] += u; d["open"] += 1
+        def fin(g):
+            for d in g.values():
+                d["realized"] = round(d["realized"], 2); d["unrealized"] = round(d["unrealized"], 2)
+                d["net"] = round(d["realized"] + d["unrealized"], 2)
+                d["win_rate"] = round(d["wins"] / d["trades"] * 100, 1) if d["trades"] else 0.0
+            return g
+        return {"regime": ctx.orchestrator.last_regime,
+                "by_strategy": fin(by_strategy), "by_book": fin(by_book), "by_regime": fin(by_regime),
+                "series": ctx.loop.strat_series()}
+
+    @app.get("/fees")
+    def fees():
+        """On-chain trading-cost model: PancakeSwap swap fees + on-chain perp
+        fees/funding + BSC gas, the breakeven price move per book, and the
+        realized fees the agent has already paid."""
+        from .fees import fee_model
+        fm = fee_model()
+        paid = sum(t.fees_usd for t in ctx.engine.closed)
+        gross = sum(t.gross_pnl_usd for t in ctx.engine.closed)
+        net = sum(t.pnl_usd for t in ctx.engine.closed)
+        margin = ctx.rcfg.deposit_usd * ctx.scfg.margin.entry_pct_of_deposit
+        notional_perp = margin * ctx.scfg.perps_leverage
+        return {
+            "model": fm.summary(ctx.rcfg.deposit_usd, ctx.scfg.margin.entry_pct_of_deposit, ctx.scfg.perps_leverage),
+            "simulate_fees": ctx.engine._simulate_fees,
+            "min_edge_gate": ctx.scfg.min_edge_gate,
+            "realized": {"gross_usd": round(gross, 2), "fees_usd": round(paid, 2), "net_usd": round(net, 2),
+                         "fee_drag_pct_of_gross": round(paid / gross * 100, 1) if gross > 0 else None},
+            "breakeven_move_pct_incl_gas": {
+                "spot": round(__import__("binacci.routing", fromlist=["execution_router"]).execution_router().breakeven_move_pct("spot", margin, "BNB"), 3),
+                "perp": round(__import__("binacci.routing", fromlist=["execution_router"]).execution_router().breakeven_move_pct("perp", notional_perp, "BNB"), 3),
+            },
+            "routing": __import__("binacci.routing", fromlist=["execution_router"]).execution_router().summary(ctx.rcfg.deposit_usd, ctx.scfg.margin.entry_pct_of_deposit, ctx.scfg.perps_leverage),
+            "note": "Gas is a fixed $ per action, so it dominates on small notional. "
+                    "Breakeven falls as deposit/position size rises.",
+        }
 
     @app.post("/backtest/perf")
     def set_backtest_perf(fast_backtest: Optional[bool] = None,
@@ -513,6 +733,44 @@ def build_app():
             })
         return out
 
+    @app.get("/golive")
+    def golive():
+        """Real-money go-live readiness checklist. Read-only — aggregates wallet/
+        auth/funding/safety so the operator can flip BINACCI_VENUE themselves."""
+        import os
+        rc, sc = ctx.rcfg, ctx.scfg
+        def chk(name, ok, detail): return {"name": name, "ok": bool(ok), "detail": detail}
+        creds = all(os.environ.get(k) for k in ("TWAK_ACCESS_ID", "TWAK_HMAC_SECRET", "TWAK_WALLET_PASSWORD"))
+        wallet = bool(rc.wallet_address) or bool(os.environ.get("BINACCI_WALLET_ADDRESS"))
+        pk = bool(os.environ.get("BINACCI_AGENT_PRIVATE_KEY"))
+        cap = sc.golive_max_usd
+        live = rc.venue in ("perps", "pancake") and not rc.use_testnet
+        sent = getattr(ctx.loop, "sentinel", None)
+        checks = [
+            chk("Trust Wallet auth (TWAK creds)", creds, "TWAK_ACCESS_ID / HMAC_SECRET / WALLET_PASSWORD set" if creds else "missing one or more TWAK_* env vars"),
+            chk("Wallet address", wallet, rc.wallet_address or "set BINACCI_WALLET_ADDRESS"),
+            chk("Deposit configured", rc.deposit_usd > 0, f"${rc.deposit_usd}"),
+            chk("ERC-8004 key (optional)", pk, "BINACCI_AGENT_PRIVATE_KEY set" if pk else "optional — for on-chain identity"),
+            chk("Fee-aware entry gate", sc.min_edge_gate or live, "on" if sc.min_edge_gate else "auto-on for live venues"),
+            chk("Go-live ramp cap", cap > 0, f"${cap}/order exposure" if cap > 0 else "recommended: BINACCI_GOLIVE_MAX_USD=25"),
+            chk("Sentinel armed", sent is not None and not getattr(sent, "tripped", False), "watching de-peg/crash" if sent else "n/a"),
+            chk("Kill switch armed", not ctx.engine.kill_switch_fired, "armed" if not ctx.engine.kill_switch_fired else "FIRED"),
+            chk("Not halted", not ctx.engine.trading_halted, ctx.engine.halt_reason or "ok"),
+            chk("Venue preflight", ctx.loop.preflight_ok is not False, ctx.loop.preflight_detail or "run POST /venue/preflight after flipping"),
+        ]
+        ready = creds and wallet and rc.deposit_usd > 0
+        steps = []
+        if not creds: steps.append("Set TWAK_ACCESS_ID / TWAK_HMAC_SECRET / TWAK_WALLET_PASSWORD (Trust Wallet Agent Kit).")
+        if not wallet: steps.append("Set BINACCI_WALLET_ADDRESS to your funded BSC wallet.")
+        steps.append("Fund the wallet: USDT (capital) + ~$10–20 BNB for gas.")
+        if cap <= 0: steps.append("Set BINACCI_GOLIVE_MAX_USD=25 so the first orders are dust-sized.")
+        steps.append("Flip live: set BINACCI_VENUE=perps and BINACCI_USE_TESTNET=false, then redeploy.")
+        steps.append("POST /venue/preflight — confirm OK. Watch /sentinel, /venue, Execution Logs; raise the cap only after real fills verify on BscScan.")
+        return {"mode": "LIVE" if live else "PAPER", "venue": rc.venue, "testnet": rc.use_testnet,
+                "ready_to_flip": ready, "checks": checks, "next_steps": steps,
+                "warnings": ["Real funds at leverage — real loss risk.",
+                             "Keep the ramp cap on until real fills are verified on-chain."]}
+
     @app.get("/venue")
     def venue():
         return {
@@ -719,6 +977,55 @@ def build_app():
             return PlainTextResponse(p.read_text(encoding="utf-8"))
         return PlainTextResponse(build_memory_md(ctx.loop))
 
+    @app.post("/optimize")
+    def optimize_start():
+        """Meta-learner: run the fee-aware sweep on accumulated data and propose
+        the best risk-adjusted edge config. Non-blocking; poll GET /optimize."""
+        from .metalearn import start_job
+        syms = list(ctx.scfg.symbols)[:8]
+        return start_job(ctx.scfg, ctx.rcfg, syms, getattr(ctx, "_data_dir", "/tmp/binacci-data"))
+
+    @app.get("/optimize")
+    def optimize_status():
+        from .metalearn import last_proposal
+        return last_proposal(getattr(ctx, "_data_dir", "/tmp/binacci-data"))
+
+    @app.post("/optimize/apply")
+    def optimize_apply():
+        """Apply the meta-learner's best proposal to the live engine (operator
+        confirm) and persist it."""
+        from .metalearn import last_proposal
+        from .persistence import save_operator_settings
+        prop = last_proposal(getattr(ctx, "_data_dir", "/tmp/binacci-data")).get("proposal") or {}
+        best = prop.get("best")
+        if not best:
+            return {"ok": False, "error": "no proposal yet — run POST /optimize first"}
+        c = ctx.scfg
+        c.perps_leverage = max(1.0, float(best["perps_leverage"]))
+        c.perps_target_mult = max(1.0, float(best["perps_target_mult"]))
+        tr = best.get("trailing") or {}
+        c.trailing.trigger_pct = float(tr.get("trigger", c.trailing.trigger_pct))
+        c.trailing.initial_sl_pct = float(tr.get("initial", c.trailing.initial_sl_pct))
+        c.trailing.step_pct = float(tr.get("step", c.trailing.step_pct))
+        c.export_runtime_env()
+        save_operator_settings(getattr(ctx, "_data_dir", "/tmp/binacci-data"), {
+            "perps_leverage": c.perps_leverage, "perps_target_mult": c.perps_target_mult,
+            "trailing": {"trigger": c.trailing.trigger_pct, "initial": c.trailing.initial_sl_pct, "step": c.trailing.step_pct}})
+        return {"ok": True, "applied": best["label"], "perps_leverage": c.perps_leverage,
+                "perps_target_mult": c.perps_target_mult,
+                "trailing": {"trigger": c.trailing.trigger_pct, "initial": c.trailing.initial_sl_pct, "step": c.trailing.step_pct}}
+
+    @app.get("/sentinel")
+    def sentinel():
+        """Market-anomaly safety net: de-peg / flash-crash / broad-crash status."""
+        s = getattr(ctx.loop, "sentinel", None)
+        if s is None:
+            return {"armed": False}
+        out = s.status()
+        out["trading_halted"] = ctx.engine.trading_halted
+        out["halt_reason"] = ctx.engine.halt_reason
+        return out
+
     @app.get("/regime")
     def regime():
         """Macro Regime Classifier (CMC-data skill) — live classification."""
@@ -729,6 +1036,42 @@ def build_app():
         out = classify_regime(macro, fg)
         out["skill"] = regime_skill_manifest()["name"]
         return out
+
+    @app.get("/funding")
+    def funding():
+        """Perps funding / basis monitor (CMC-data skill). Per-symbol perp
+        premium vs spot and the fade classification. Empty in paper (mark==spot)."""
+        from .funding import classify_funding, funding_skill_manifest
+        book = {}
+        try:
+            book = dict(ctx.orchestrator.funding_provider() or {})
+        except Exception:
+            book = {}
+        thr = ctx.scfg.funding.min_abs_funding_pct
+        rows = [{"symbol": s, **classify_funding(f, thr)} for s, f in sorted(book.items())]
+        return {"threshold_pct": thr, "count": len(rows),
+                "extreme": [r for r in rows if r["extreme"]],
+                "all": rows, "skill": funding_skill_manifest(),
+                "note": "Funding from on-chain perp mark vs CMC spot; idle in paper."}
+
+    @app.get("/basis")
+    def basis():
+        """Spot–perp basis carry monitor. Premium-only delta-neutral candidates
+        and any active carry pairs (short perp + long spot hedge)."""
+        from .basis import basis_skill_manifest
+        from .funding import classify_funding
+        book = {}
+        try:
+            book = dict(ctx.orchestrator.funding_provider() or {})
+        except Exception:
+            book = {}
+        thr = ctx.scfg.funding.min_abs_funding_pct
+        carry = [{"symbol": sym, **classify_funding(f, thr)} for sym, f in sorted(book.items()) if f >= thr]
+        pairs = [{"symbol": pos.symbol, "tf": pos.timeframe.value, "notional_usd": round(pos.notional_usd, 2)}
+                 for pos in ctx.engine.open_positions() if pos.meta.get("strategy") == "basis_carry"]
+        return {"threshold_pct": thr, "carry_candidates": carry, "active_pairs": pairs,
+                "skill": basis_skill_manifest(),
+                "note": "Premium-only delta-neutral carry (short perp + long spot); idle in paper."}
 
     @app.post("/chain/register")
     def chain_register():

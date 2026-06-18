@@ -72,9 +72,7 @@ a { color: inherit; text-decoration: none; }
 }
 .brandmark {
   border-radius: 8px;
-  border: 1px solid var(--border-gold);
-  background: rgba(245, 185, 63, 0.04);
-  box-shadow: 0 0 18px rgba(245, 185, 63, 0.12);
+  border: 1px solid var(--border-soft);
 }
 .wordmark {
   font-family: var(--font-display);
@@ -103,10 +101,11 @@ a { color: inherit; text-decoration: none; }
   overflow-y: auto;
 }
 .sidebar .nav-label {
-  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.2em;
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.18em;
   text-transform: uppercase; color: var(--text-muted);
-  padding: 0 12px 8px;
+  padding: 0 12px 6px; margin-top: 16px;
 }
+.sidebar > .nav-label:first-child { margin-top: 2px; }
 .nav-item {
   display: flex; align-items: center; gap: 10px;
   padding: 9px 12px; border-radius: var(--radius-sm);
@@ -252,9 +251,9 @@ thead th { background: var(--bg-elev); }
 
 /* Badges */
 .badge {
-  display: inline-block; padding: 2.5px 9px; border-radius: 6px;
-  font-family: var(--font-mono); font-size: 9.5px; font-weight: 600;
-  letter-spacing: 0.12em; text-transform: uppercase; border: 1px solid; white-space: nowrap;
+  display: inline-block; padding: 2px 7px; border-radius: 5px;
+  font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; border: 1px solid; white-space: nowrap;
 }
 .badge.gold  { color: var(--brand-gold); border-color: var(--border-gold); background: rgba(245,185,63,0.08); }
 .badge.cyan  { color: var(--brand-cyan); border-color: var(--border-cyan); background: rgba(25,217,255,0.07); }
@@ -379,7 +378,8 @@ select option { background: var(--bg-panel); color: var(--text-primary); }
 
 /* Command Center — hero band */
 .hero {
-  display: flex; gap: 20px; align-items: stretch; justify-content: space-between;
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 460px);
+  gap: 24px; align-items: stretch;
   background: var(--gradient-panel);
   border: 1px solid var(--border-gold);
   border-radius: var(--radius-xl);
@@ -390,7 +390,7 @@ select option { background: var(--bg-panel); color: var(--text-primary); }
   background: radial-gradient(600px 200px at 85% -40%, rgba(245,185,63,0.10), transparent 70%);
   pointer-events: none; }
 .hero-left { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.hero-right { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; justify-content: flex-end; }
+.hero-right { width: auto; min-width: 0; display: flex; flex-direction: column; justify-content: flex-end; }
 .eyebrow { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.22em;
   text-transform: uppercase; color: var(--text-muted); }
 .hero-eq { font-family: var(--font-display); font-weight: 700; font-size: 42px;
@@ -558,3 +558,137 @@ h2.section::after { content: ""; flex: 1; height: 1px;
 }
 .safety-banner strong { letter-spacing: 0.04em; }
 .safety-hint { margin-left: auto; opacity: 0.8; font-family: var(--font-mono, monospace); font-size: 11px; }
+
+/* ============================================================
+   Charts — institutional, minimal chart junk
+   ============================================================ */
+.chartbox { background: var(--gradient-panel); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg); padding: 14px 16px 8px; box-shadow: 0 1px 0 rgba(255,255,255,0.02), 0 10px 30px rgba(0,0,0,0.22); }
+.chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.chart-title { font-family: var(--font-display); font-weight: 600; font-size: 13px; color: var(--text-primary); letter-spacing: 0.01em; }
+.chart-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.chart-area { position: relative; }
+.chart-empty { color: var(--text-muted); font-size: 12px; padding: 28px 4px; text-align: center; }
+.ylabel { position: absolute; right: 2px; font-family: var(--font-mono); font-size: 9.5px;
+  color: var(--text-muted); background: rgba(5,6,7,0.55); padding: 0 4px; border-radius: 3px; pointer-events: none; }
+.ylabel.ymax { top: 2px; } .ylabel.ymin { bottom: 4px; }
+
+.bars { display: flex; flex-direction: column; gap: 9px; padding: 4px 2px; }
+.bar-row { display: grid; grid-template-columns: 120px 1fr 76px; align-items: center; gap: 10px; }
+.bar-label { font-size: 12px; color: var(--text-secondary); text-transform: capitalize; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar-track { height: 9px; background: rgba(255,255,255,0.04); border-radius: 5px; overflow: hidden; }
+.bar { height: 100%; border-radius: 5px; }
+.bar.pos { background: linear-gradient(90deg, rgba(24,200,120,0.5), var(--profit)); }
+.bar.neg { background: linear-gradient(90deg, rgba(255,77,77,0.5), var(--loss)); }
+.bar-val { font-family: var(--font-mono); font-size: 12px; text-align: right; }
+.bar-val.pos { color: var(--profit); } .bar-val.neg { color: var(--loss); }
+
+/* Console compact status strip (no duplication of Command Center KPIs) */
+.statline { display: flex; flex-wrap: wrap; gap: 22px; align-items: baseline;
+  background: var(--gradient-panel); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md); padding: 12px 16px; margin-bottom: 18px;
+  font-size: 12.5px; color: var(--text-secondary); }
+.statline b { font-family: var(--font-mono); color: var(--text-primary); margin-left: 6px; font-size: 13px; }
+.statline b.pos { color: var(--profit); } .statline b.neg { color: var(--loss); }
+.statline b.gold { color: var(--brand-gold); } .statline b.cyan { color: var(--brand-cyan); }
+
+
+/* ============================================================
+   Responsive — fill ultrawide, collapse cleanly to mobile
+   ============================================================ */
+
+/* Side padding scales with the viewport: big screens breathe instead of
+   stranding a dead gutter; small screens tighten up. */
+.main { padding: 22px clamp(18px, 2.4vw, 60px) 44px; }
+
+/* Ultrawide (>=1900px): widen the chrome and let the hero chart grow so the
+   terminal uses the space rather than leaving it empty on the right. */
+@media (min-width: 1900px) {
+  .sidebar { width: 232px; }
+  .rail { width: 340px; }
+  .hero { grid-template-columns: minmax(0, 1fr) minmax(360px, 560px); }
+  .hero-eq { font-size: 50px; }
+  .cards { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+}
+/* Beyond ~2.6k, center the content column so lines don't sprawl edge-to-edge. */
+@media (min-width: 2600px) {
+  .main { padding-left: calc((100vw - 2480px) / 2); padding-right: calc((100vw - 2480px) / 2); }
+}
+
+/* Tablet: stack the hero before it gets cramped. */
+@media (max-width: 1024px) {
+  .hero { grid-template-columns: 1fr; }
+  .hero-right { width: 100%; }
+}
+
+/* Mobile: sidebar becomes a horizontal pill bar; page scrolls naturally;
+   tables scroll horizontally inside their box; KPIs go 2-up. */
+@media (max-width: 860px) {
+  .shell { height: auto; min-height: 100vh; overflow: visible; }
+  .body { flex-direction: column; overflow: visible; }
+  .sidebar {
+    display: flex; flex-direction: row; width: 100%; gap: 6px;
+    overflow-x: auto; padding: 8px 12px;
+    border-right: none; border-bottom: 1px solid var(--border-soft);
+  }
+  .sidebar .nav-label, .sidebar .nav-foot { display: none; }
+  .nav-item { white-space: nowrap; padding: 8px 13px; font-size: 12.5px; }
+  .main { padding: 16px 14px 30px; overflow-y: visible; }
+  .cards { grid-template-columns: repeat(2, 1fr); }
+  .hero-eq { font-size: 32px; }
+  .tbl-wrap table { min-width: 560px; }
+}
+@media (max-width: 440px) {
+  .topbar { padding: 11px 14px; }
+  .wordmark { font-size: 15px; letter-spacing: 0.2em; }
+}
+
+/* ============================================================
+   Hi-fi charting: axis labels, tooltip, sparklines, book bar
+   ============================================================ */
+.ylabel { transform: translateY(-50%); background: rgba(8,10,14,0.55); padding: 0 3px; border-radius: 3px; pointer-events: none; }
+.ylabel.ymax, .ylabel.ymin { top: auto; bottom: auto; } /* legacy no-op */
+.xlabel { position: absolute; bottom: -2px; font-family: var(--font-mono); font-size: 9.5px; color: var(--text-muted); pointer-events: none; }
+.xlabel.xstart { left: 0; }
+.xlabel.xend { right: 0; }
+.baseline-tag { position: absolute; left: 2px; transform: translateY(-50%); font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); opacity: 0.8; pointer-events: none; }
+.chart-tip { position: absolute; top: 4px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 1px;
+  background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: 6px; padding: 4px 8px; pointer-events: none; white-space: nowrap; z-index: 5; }
+.chart-tip b { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); }
+.chart-tip span { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-muted); }
+
+/* sparkline sits flush at the bottom of a KPI card */
+.card svg { margin-top: 6px; opacity: 0.95; }
+
+/* capital-allocation book bar */
+.bookbar-wrap { display: flex; flex-direction: column; gap: 7px; }
+.bookbar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: rgba(255,255,255,0.04); border: 1px solid var(--border-soft); }
+.bookbar .seg { height: 100%; }
+.bookbar .seg.spot { background: linear-gradient(90deg, #3aa0ff, #2b7fd6); }
+.bookbar .seg.plong { background: linear-gradient(90deg, #18c878, #12a060); }
+.bookbar .seg.pshort { background: linear-gradient(90deg, #ff5d5d, #d83a3a); }
+.bookbar .seg.empty { background: transparent; }
+.bookbar-key { display: flex; flex-wrap: wrap; gap: 16px; font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
+.bookbar-key span { display: inline-flex; align-items: center; gap: 6px; }
+.bookbar-key i.k { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.bookbar-key i.k.spot { background: #3aa0ff; }
+.bookbar-key i.k.plong { background: #18c878; }
+.bookbar-key i.k.pshort { background: #ff5d5d; }
+
+/* decluttered activity feed: skip reasons as compact chips */
+.skip-reason { display: inline-block; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-secondary);
+  background: rgba(255,255,255,0.04); border: 1px solid var(--border-soft); border-radius: 4px; padding: 1px 6px; margin: 2px 4px 0 0; }
+
+/* cost-to-breakeven bar segments + legend */
+.bar.costfee { background: linear-gradient(90deg, #3aa0ff, #2b7fd6); border-radius: 5px 0 0 5px; }
+.bar.costgas { background: linear-gradient(90deg, #f5b93f, #d8932a); border-radius: 0 5px 5px 0; }
+.bookbar-key i.k.costfee { background: #3aa0ff; }
+.bookbar-key i.k.costgas { background: #f5b93f; }
+
+/* per-strategy small multiples */
+.multiples { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.mult { background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: var(--radius-md); padding: 10px 12px; }
+.mult-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.mult-name { font-family: var(--font-display); font-weight: 600; font-size: 12px; color: var(--text-primary); text-transform: capitalize; }
+.mult-val { font-family: var(--font-mono); font-size: 12px; }
+.mult-val.pos { color: var(--profit); } .mult-val.neg { color: var(--loss); }

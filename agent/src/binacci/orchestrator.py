@@ -83,6 +83,9 @@ class Orchestrator:
         #: The active strategy portfolio. Defaults to every strategy enabled
         #: in cfg.strategies; the core reaction strategy is always first.
         self.strategies: list[Strategy] = strategies or build_strategies(cfg)
+        self.funding_provider = lambda: {}  # symbol -> funding %% (set by live loop)
+        for _s in self.strategies:
+            _s.funding_provider = lambda: self.funding_provider()
         self.pending: list[PendingEntry] = []
         self.traces: list[DecisionTrace] = []
         self.max_traces = 800
@@ -92,6 +95,7 @@ class Orchestrator:
         self.on_open = None   # fn(position) -> None
         self.on_close = None  # fn(closed_trade) -> None
         self.on_average = None  # fn(position) -> None  (averaging add mirror)
+        self.last_regime = "unknown"  # latest macro regime (for size weighting + UI)
 
     # ---------------- background sims ----------------
 
@@ -114,9 +118,15 @@ class Orchestrator:
         max_age = timedelta(minutes=tf.minutes * (self.cfg.sims.extrema_window * 6))
         fresh = ref is not None and (ts - ref.ts) <= max_age
 
+        from .regime import classify_regime
+        self.last_regime = classify_regime(self.macro_provider()).get("regime", "unknown")
         last_trace: Optional[DecisionTrace] = None
         for strat in self.strategies:
             if len(df) < strat.min_bars:
+                continue
+            # skip strategies whose book is switched off — a disabled book takes
+            # no new positions (its open ones are still managed/flattened).
+            if not self.cfg.book_enabled(self.cfg.market_for(strat.name)):
                 continue
             # Spot strategies are long-only; perps strategies trade both ways
             # (when shorts are enabled). Both books run at the same time.
@@ -125,7 +135,7 @@ class Orchestrator:
             else:
                 sides = [Side.LONG]
             for s in sides:
-                tr = self._evaluate_one(strat, symbol, tf, df, ts, s, ref, fresh)
+                tr = self._evaluate_one(strat, symbol, tf, df, ts, s, ref, fresh, self.last_regime)
                 last_trace = tr
                 # if this strategy parked an entry, don't also try the other side
                 if tr.gates and tr.gates[-1].step is GateStep.LEVEL and tr.gates[-1].passed:
@@ -134,7 +144,8 @@ class Orchestrator:
 
     def _evaluate_one(self, strat: Strategy, symbol: str, tf: Timeframe,
                       df: pd.DataFrame, ts: datetime, side: Side,
-                      ref: Optional[ReferencePoint], fresh: bool) -> DecisionTrace:
+                      ref: Optional[ReferencePoint], fresh: bool,
+                      regime: str = "unknown") -> DecisionTrace:
         trace = DecisionTrace(symbol=symbol, timeframe=tf, ts=ts, strategy=strat.name)
 
         # 01 — fresh reference (only strategies that anchor on one)
@@ -153,6 +164,14 @@ class Orchestrator:
             self._record(trace)
             return trace
         trace.add(GateStep.ZONE, True, ",".join(proposal.reasons) or "in zone")
+        # Quality gate: only the strongest setups earn a slot. Fewer, higher-
+        # conviction fills => a smoother, compounding curve (vs. filling every
+        # slot with marginal signals).
+        if proposal.strength < self.cfg.min_signal_strength:
+            trace.add(GateStep.FILTERS, False,
+                      f"strength {proposal.strength:.2f} < gate {self.cfg.min_signal_strength:.2f}")
+            self._record(trace)
+            return trace
         trace.add(GateStep.FILTERS, True, str(proposal.meta.get("filters", "")) or "confirmed")
 
         # 04 — macro (per-strategy: some are explicit counter-trend fades)
@@ -181,6 +200,20 @@ class Orchestrator:
         # strategies uniformly — including the ones with no per-strategy mult.
         if self.cfg.market_for(strat.name) == "perp":
             target *= self.cfg.perps_target_mult
+        # Fee-aware gate: a setup whose target can't clear round-trip fees + gas
+        # is a guaranteed loser on a live wallet. (Gas is fixed $, so it bites
+        # hardest on small notional — size up to fix it.)
+        if self.cfg.min_edge_gate:
+            from .routing import execution_router
+            mkt = self.cfg.market_for(strat.name)
+            sm = self.cfg.regime_size_mult(regime, strat.name)
+            margin = self.engine.entry_notional_usd() * sm
+            notional = margin * (self.cfg.perps_leverage if mkt == "perp" else 1.0)
+            be = execution_router().breakeven_move_pct(mkt, notional, symbol)
+            if target < be:
+                trace.add(GateStep.LEVEL, False, f"target {target:.2f}% < fee breakeven {be:.2f}%")
+                self._record(trace)
+                return trace
         sig = EntrySignal(
             symbol=symbol, timeframe=tf, side=side,
             level_price=proposal.level_price, reference=reference,
@@ -189,7 +222,9 @@ class Orchestrator:
             meta={"level_kind": proposal.level_kind,
                   "level_strength": proposal.strength,
                   "strategy": strat.name, "reasons": proposal.reasons,
-                  "market": self.cfg.market_for(strat.name)},
+                  "market": self.cfg.market_for(strat.name),
+                  "regime": regime,
+                  "size_mult": self.cfg.regime_size_mult(regime, strat.name)},
         )
         # replace any stale pending for same (symbol, tf, strategy)
         self.pending = [p for p in self.pending
@@ -235,6 +270,14 @@ class Orchestrator:
                         except Exception:  # venue failure never corrupts engine state
                             import logging
                             logging.getLogger(__name__).exception("on_open hook failed")
+                    if pos.meta.get("strategy") == "basis_carry" and pos.side is Side.SHORT:
+                        hedge = self.engine.open_carry_hedge(pos, sig.level_price, ts)
+                        if hedge is not None and self.on_open:
+                            try:
+                                self.on_open(hedge)
+                            except Exception:
+                                import logging
+                                logging.getLogger(__name__).exception("hedge on_open failed")
 
         # manage open positions on this symbol
         for pos in self.engine.open_positions():
@@ -268,6 +311,24 @@ class Orchestrator:
         # kill switch across the whole book
         closed += self.engine.check_kill_switch(prices, ts)
 
+        if self.on_close:
+            for trade in closed:
+                try:
+                    self.on_close(trade)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("on_close hook failed")
+        return closed
+
+    # ---------------- operator flatten ----------------
+
+    def flatten(self, prices: dict[str, float], ts: datetime,
+                market: Optional[str] = None, symbol: Optional[str] = None,
+                reason: str = "operator_flatten") -> list[ClosedTrade]:
+        """Force-close open positions (optionally one book/symbol) and mirror
+        each close on-chain through the venue hook — same discipline as a
+        kill-switch close: the engine decides, the venue follows."""
+        closed = self.engine.flatten(prices, ts, market=market, symbol=symbol, reason=reason)
         if self.on_close:
             for trade in closed:
                 try:

@@ -1,6 +1,7 @@
 "use client";
 
 import { useAgent, fmt } from "../useAgent";
+import { AttributionBars, StratMultiples } from "../charts";
 
 type Cat = {
   strategy: string; skill: string; title: string; philosophy: string;
@@ -15,6 +16,7 @@ type Strategies = {
 
 export default function StrategiesPage() {
   const [data, live] = useAgent<Strategies | null>("/strategies", null);
+  const [attr] = useAgent<{ series?: { t: number; by: Record<string, number> }[] }>("/attribution", {}, 8000);
   const cat = data?.catalog ?? [];
   const active = new Set(data?.active ?? []);
 
@@ -32,6 +34,13 @@ export default function StrategiesPage() {
         independent reasons to be in a market, with the slot cap and kill switch bounding total
         exposure. Positions are unique per (market, timeframe, strategy), so the strategies never collide.
       </p>
+
+      <h2 className="section">Realized P/L by Strategy</h2>
+      <div className="chartbox" style={{ marginBottom: 22 }}>
+        <AttributionBars
+          rows={Object.entries(data?.realized_pnl_by_strategy ?? {}).map(([label, net]) => ({ label, net }))}
+          empty="no realized P/L yet — strategies are warming up" />
+      </div>
 
       <div className="strat-grid">
         {cat.length === 0 && <div className="strat-card"><div className="sc-title">Loading…</div></div>}
@@ -67,12 +76,48 @@ export default function StrategiesPage() {
         })}
       </div>
 
+      <h2 className="section">Per-Strategy P/L Over Time</h2>
+      <p className="lede" style={{ marginBottom: 14 }}>
+        Cumulative realized P/L per strategy, sampled live. Diverging lines show which edges are
+        compounding and which are bleeding — the signal the meta-learner optimizes against.
+      </p>
+      <div className="chartbox" style={{ marginBottom: 24 }}>
+        <StratMultiples series={attr.series ?? []} labels={data?.active} />
+      </div>
+
+      <h2 className="section">Operations Agents</h2>
+      <p className="lede" style={{ marginBottom: 14 }}>
+        Beyond the trading strategies, a set of operations agents supervise the book — they never place a
+        trade themselves, they shape how trades are sized, routed and protected.
+      </p>
+      <div className="strat-grid" style={{ marginBottom: 8 }}>
+        {[
+          { name: "Risk Matcher", skill: "binacci-risk-matcher", desc: "Maps your deposit/margin to the fee-viable risk envelope (slots, entry size, leverage). Recommends; you apply with one tap in Controls." },
+          { name: "Execution Router", skill: "binacci-execution-router", desc: "Picks the cheapest fill path (V3 0.05% vs V2 0.25%), models price impact and splits orders so slippage + gas stay below the edge." },
+          { name: "Meta-Learner", skill: "binacci-meta-learner", desc: "Runs a fee-aware parameter sweep on real history and proposes leverage / trailing / target tweaks — operator approves before they go live." },
+          { name: "Sentinel", skill: "binacci-sentinel", desc: "Watches for stablecoin de-pegs, flash moves and broad crashes; halts new opens the moment risk spikes." },
+        ].map((a) => (
+          <div key={a.name} className="strat-card">
+            <div className="sc-head">
+              <span className="sc-name">{a.name}</span>
+              <span className="badge cyan">AGENT</span>
+            </div>
+            <p className="sc-desc">{a.desc}</p>
+            <div className="sc-foot">
+              <div className="vault" style={{ padding: "10px 13px" }}>
+                <div className="row"><span>Skill</span><span className="v" style={{ fontSize: 10.5 }}>{a.skill}</span></div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
       <h2 className="section">Shared Risk Engine</h2>
       <div className="vault" style={{ maxWidth: 760, borderColor: "var(--border-cyan)" }}>
         <p className="lede">
           Every strategy obeys the house invariant: entries are limits at a concrete level, never a
           market chase. Whatever a strategy proposes, the deterministic engine sizes it (30/70 margin,
-          per-mode position cap), averages only at a level while in drawdown (x4 then x2), trails the
+          per-mode position cap), averages only at a level while in drawdown (per-mode multipliers), trails the
           stop into profit, caps the tail loser with a hard per-position stop, and force-flattens
           everything if aggregate floating drawdown hits the kill switch. The AI proposes; the engine disposes.
         </p>

@@ -23,6 +23,8 @@ from datetime import datetime
 from typing import Optional
 
 from .config import StrategyConfig, Timeframe
+from .fees import fee_model
+from .routing import execution_router
 from .models import (
     EntrySignal,
     Fill,
@@ -45,8 +47,10 @@ class AccountState:
 @dataclass
 class ClosedTrade:
     position: Position
-    pnl_usd: float
+    pnl_usd: float            # net of on-chain fees
     reason: str
+    gross_pnl_usd: float = 0.0
+    fees_usd: float = 0.0
 
 
 class ExecutionEngine:
@@ -58,6 +62,13 @@ class ExecutionEngine:
         self.positions: list[Position] = []
         self.closed: list[ClosedTrade] = []
         self.kill_switch_fired: bool = False
+        import os as _os
+        self.fees = fee_model()
+        self.router = execution_router()  # execution-quality agent (V3 routing + impact)
+        #: book realized P/L net of estimated on-chain fees (swap/perp/gas) even
+        #: in paper, so the displayed edge is what a live wallet would actually
+        #: keep. Disable with BINACCI_SIMULATE_FEES=false to see gross.
+        self._simulate_fees = _os.environ.get("BINACCI_SIMULATE_FEES", "false").strip().lower() in ("1", "true", "yes", "on")
         #: Hard halt on NEW opens (preflight failure / boot-reconcile mismatch /
         #: unrecoverable venue desync). Closes and management still run so the
         #: book can always be flattened. Cleared by resume() after a human ack.
@@ -110,9 +121,13 @@ class ExecutionEngine:
             return False
         if self.slots_free() <= 0:
             return False
+        # book master switch: a disabled book takes no new positions (its open
+        # positions are still managed/closed, so it can always be flattened).
+        market = self.cfg.market_for(strategy)
+        if not self.cfg.book_enabled(market):
+            return False
         # per-book capacity: neither spot nor perps may hog the whole budget,
         # so both books stay live at the same time.
-        market = self.cfg.market_for(strategy)
         cap = self.cfg.book_cap()
         in_book = sum(1 for p in self.positions
                       if p.state is not PositionState.CLOSED
@@ -134,10 +149,14 @@ class ExecutionEngine:
         strategy = getattr(sig, "strategy", "reaction")
         if not self.can_open(sig.symbol, sig.timeframe, strategy):
             return None
-        notional = self.entry_notional_usd()
-        qty = notional / fill_price
         market = self.cfg.market_for(strategy)
         leverage = self.cfg.perps_leverage if market == "perp" else 1.0
+        size_mult = max(0.0, min(1.0, float(sig.meta.get("size_mult", 1.0) or 1.0)))
+        notional = self.entry_notional_usd() * size_mult
+        cap = getattr(self.cfg, "golive_max_usd", 0.0) or 0.0
+        if cap > 0:
+            notional = min(notional, cap / max(leverage, 1.0))  # cap live EXPOSURE
+        qty = notional / fill_price
         pos = Position(
             symbol=sig.symbol,
             timeframe=sig.timeframe,
@@ -208,17 +227,61 @@ class ExecutionEngine:
                 return self._close(pos, price, ts, reason="trailing_stop")
         return None
 
-    def _close(self, pos: Position, price: float, ts: datetime, reason: str) -> ClosedTrade:
-        pnl = pos.unrealized_pnl_usd(price)
+    def _close(self, pos: Position, price: float, ts: datetime, reason: str, _cascade: bool = True) -> ClosedTrade:
+        gross = pos.unrealized_pnl_usd(price)
+        fees = 0.0
+        if self._simulate_fees:
+            market = self.cfg.market_for(pos.meta.get("strategy", "reaction"))
+            lev = float(pos.meta.get("leverage", 1.0) or 1.0)
+            hours = ((ts - pos.opened_ts).total_seconds() / 3600.0) if pos.opened_ts else 0.0
+            fees = self.router.roundtrip_cost_usd(market, pos.notional_usd, lev, hours, pos.symbol)
+        pnl = gross - fees
         pos.fills.append(Fill(ts=ts, price=price, qty=-pos.qty, notional_usd=-pos.notional_usd, tag="exit"))
         pos.state = PositionState.CLOSED
         pos.closed_ts = ts
         pos.close_reason = reason
         pos.realized_pnl_usd = pnl
+        pos.meta["fees_usd"] = round(fees, 4)
         self.account.realized_pnl_usd += pnl
-        trade = ClosedTrade(position=pos, pnl_usd=pnl, reason=reason)
+        trade = ClosedTrade(position=pos, pnl_usd=pnl, reason=reason,
+                            gross_pnl_usd=gross, fees_usd=fees)
         self.closed.append(trade)
+        if _cascade:
+            self._close_carry_pair(pos, price, ts)
         return trade
+
+    def _close_carry_pair(self, pos: Position, price: float, ts: datetime) -> None:
+        """When one leg of a delta-neutral basis carry closes, close the other."""
+        strat = pos.meta.get("strategy")
+        if strat not in ("basis_carry", "basis_hedge"):
+            return
+        pair = "basis_hedge" if strat == "basis_carry" else "basis_carry"
+        for o in list(self.positions):
+            if (o.symbol == pos.symbol and o.timeframe == pos.timeframe
+                    and o.meta.get("strategy") == pair
+                    and o.state in (PositionState.OPEN, PositionState.SL_IN_PROFIT)):
+                self._close(o, price, ts, reason="carry_pair_close", _cascade=False)
+
+    def open_carry_hedge(self, perp_pos: Position, fill_price: float, ts: datetime) -> Optional[Position]:
+        """Delta-neutral spot LONG hedge for a short-perp basis carry: equal
+        notional, opened directly (bypasses slot/dup checks — it's a paired leg)."""
+        if perp_pos.side is not Side.SHORT:
+            return None
+        for o in self.positions:
+            if (o.symbol == perp_pos.symbol and o.timeframe == perp_pos.timeframe
+                    and o.meta.get("strategy") == "basis_hedge" and o.state is not PositionState.CLOSED):
+                return None  # already hedged
+        notional = perp_pos.notional_usd
+        if notional <= 0 or fill_price <= 0:
+            return None
+        hedge = Position(symbol=perp_pos.symbol, timeframe=perp_pos.timeframe, side=Side.LONG,
+                         state=PositionState.OPEN, target_pct=perp_pos.target_pct, opened_ts=ts,
+                         meta={"level": fill_price, "strategy": "basis_hedge", "market": "spot",
+                               "leverage": 1.0, "gates": [], "carry": True})
+        hedge.fills.append(Fill(ts=ts, price=fill_price, qty=notional / fill_price,
+                                notional_usd=notional, tag="entry"))
+        self.positions.append(hedge)
+        return hedge
 
     # ---------------- venue reconciliation (keeps books == chain) ----------------
 
@@ -334,6 +397,28 @@ class ExecutionEngine:
         for p in openpos:
             px = prices.get(p.symbol, p.avg_entry)
             out.append(self._close(p, px, ts, reason="kill_switch"))
+        return out
+
+    def flatten(self, prices: dict[str, float], ts: datetime,
+                market: Optional[str] = None, symbol: Optional[str] = None,
+                reason: str = "operator_flatten") -> list[ClosedTrade]:
+        """Operator close: force-close open positions, optionally scoped to one
+        book ('spot'|'perp') or one symbol. Worst-first (like the kill switch)
+        so the biggest losers flatten first if the venue closes sequentially.
+        Returns the closed trades; the caller mirrors them on-chain via the
+        venue close hook."""
+        openpos = [p for p in self.positions
+                   if p.state in (PositionState.OPEN, PositionState.SL_IN_PROFIT)]
+        if market is not None:
+            openpos = [p for p in openpos
+                       if self.cfg.market_for(p.meta.get("strategy", "reaction")) == market]
+        if symbol is not None:
+            openpos = [p for p in openpos if p.symbol == symbol]
+        openpos.sort(key=lambda p: p.unrealized_pnl_usd(prices.get(p.symbol, p.avg_entry)))
+        out: list[ClosedTrade] = []
+        for p in openpos:
+            px = prices.get(p.symbol, p.avg_entry)
+            out.append(self._close(p, px, ts, reason=reason))
         return out
 
     # ---------------- reporting ----------------
